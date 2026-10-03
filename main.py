@@ -1,7 +1,7 @@
 from llm import chat
 import json
 from sessions import load_session,save_session
-from tools import tools_functions
+from tools import registry
 
 session_id=input("Session: ")
 messages=load_session(session_id)
@@ -41,8 +41,10 @@ while True:
                 tool_call.function.arguments
             )
             print("Tool arguments:", arguments)
-            function=tools_functions[name]
-            result=function(**arguments)
+            result=registry.execute(
+                name,
+                arguments,
+            )
             print("Tool result:", result)
             messages.append(
                 {
