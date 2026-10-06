@@ -1,56 +1,27 @@
-from llm import chat
-import json
-from sessions import load_session,save_session
-from tools import registry
+from functools import partial
+from pathlib import Path
+from agent import run_agent
+from qgis_backend.adapter import load_qgis_tool
+from qgis_backend.catalog import  load_catalog,make_search_tool
+from qgis_backend.client import QGISClient
+from tools import  registry
+from tools.builtin import builtin_tools
 
-session_id=input("Session: ")
-messages=load_session(session_id)
+def main()->None:
+    client=QGISClient()
+    catalog=load_catalog(client)
+    search_tool=make_search_tool(catalog)
 
-while True:
-    user_input=input("You: ")
-    if user_input=="exit":
-        break
-    messages.append(
-        {
-            "role":"user",
-            "content":user_input,
-        }
+    registry.register(search_tool)
+    print(f"QGIS catalog: {len(catalog)} algorithms")
+    run_agent(
+        registry,
+        [*builtin_tools,search_tool],
+        partial(
+            load_qgis_tool,client,catalog,registry,
+        ),
+        Path(__file__).resolve().parent/"outputs",
     )
-    while True:
-        message=chat(messages)
-        assistant_message={
-            "role":"assistant",
-            "content":message.content,
-        }
 
-        if message.tool_calls:
-            assistant_message["tool_calls"]=[
-                tool_call.model_dump()
-                for tool_call in message.tool_calls
-            ]
-        
-        messages.append(assistant_message)
-        if not message.tool_calls:
-            print("Agent:",message.content)
-            break
-
-        for tool_call in message.tool_calls:
-            name=tool_call.function.name
-            print("Tool called:", name)
-            arguments=json.loads(
-                tool_call.function.arguments
-            )
-            print("Tool arguments:", arguments)
-            result=registry.execute(
-                name,
-                arguments,
-            )
-            print("Tool result:", result)
-            messages.append(
-                {
-                    "role":"tool",
-                    "tool_call_id":tool_call.id,
-                    "content":str(result),
-                }
-            )
-    save_session(session_id,messages)
+if __name__=="__main__":
+    main()

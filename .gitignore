@@ -5,3 +5,8 @@ __pycache__/
 .vscode
 
 .history
+
+outputs/
+
+data/
+
