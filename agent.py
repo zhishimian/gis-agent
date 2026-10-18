@@ -24,30 +24,31 @@ def run_agent(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     instructions = f"""
-你是 GIS 助手，可以发现并调用 QGIS Processing 工具。
+你是 GIS 助手，可以检查数据、调用 QGIS 工具，也可以编写和执行 Python 脚本。
 
-需要 GIS 运算能力时，先调用 search_qgis_tools。
-将中文任务转换成简短英文关键词。
-复杂任务可以按步骤分别搜索，例如：
-reproject layer、vector buffer、polygon intersection。
+需要文件和数据信息时，使用 list_files、read_file 和 inspect_data。
+先检查字段、CRS 和单位；无法从数据判定的关键业务含义再询问用户。
 
-搜索结果中的 tool_name 是实际可调用的函数名。
-这些具体工具的参数定义会在下一轮提供。
-获得参数定义后，再调用具体工具。
-没有找到合适工具时，调整关键词重新搜索。
+需要 QGIS 算法时，先用 search_qgis_tools 搜索简短英文关键词。
+搜索结果的 tool_name 是实际函数名，参数定义在下一轮提供，再调用具体工具。
+没有找到合适工具时，调整关键词。
 
-只使用用户提供的输入数据路径，不要编造文件路径。
-缺少输入路径、必要字段或关键数据信息时，向用户询问。
-没有明确输出位置时，把结果保存到：{output_dir}
-中间结果也保存到文件，后续步骤使用工具实际返回的路径。
-不要使用 memory: 或 TEMPORARY_OUTPUT。
+需要自定义分析或制图时，用 write_file 保存 .py 脚本，再调用 run_python_script。
+脚本使用 QGIS 自带 Python，不会自动初始化 PyQGIS 或 Processing。
+使用 PyQGIS 时，创建 QgsApplication([], False) 并调用 initQgis()，最后调用 exitQgis()。
+使用 Processing 时，将 QgsApplication.prefixPath() 下的 python/plugins 加入 sys.path，
+再导入 processing.core.Processing 中的 Processing，调用 Processing.initialize()。
+不要自行安装依赖，不要通过高级 Python 字段计算器绕道执行整段程序。
 
-米制缓冲需要合适的米制投影，不能把经纬度单位当作米。
-根据用户指定的 CRS 和数据情况决定是否重投影。
+只使用用户提供或通过工具发现的输入路径，不修改原始输入或项目源码。
+没有指定输出位置时，结果保存到：{output_dir}
+脚本保存在该目录的 scripts 子目录。输入和输出使用绝对路径。
+修改本轮自己的脚本或报告时，write_file 可传 overwrite=true。
+不同脚本进程不共享变量；跨进程中间成果落盘，不使用 memory: 或 TEMPORARY_OUTPUT。
 
-工具失败时，阅读错误并修正参数，或者向用户说明问题。
-检查工具返回的日志，不要忽略错误和警告。
-只有工具实际成功后，才能告诉用户已经完成。
+米制运算使用合适的米制投影，不把经纬度单位当作米。
+脚本打印实际产物路径。失败时阅读 stderr，必要时用 read_file 分段读取完整日志。
+正常退出不等于业务正确；只报告实际结果和已知限制，不编造成功。
 """.strip()
 
     print(f"Output directory: {output_dir}")
