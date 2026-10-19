@@ -33,6 +33,7 @@ def main() -> None:
         [*builtin_tools, *extra_tools],
         partial(load_qgis_tool, client, catalog, registry),
         output_root,
+        max_steps=30,
     )
 
 
