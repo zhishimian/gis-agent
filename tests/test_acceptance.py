@@ -1,0 +1,307 @@
+"""完整运行会调用真实 API 和 QGIS；只跑本地检查时加 -k "not live"。"""
+
+import json
+import math
+import os
+from functools import partial
+from pathlib import Path
+from typing import Any
+
+import pytest
+from dotenv import dotenv_values
+from openai import DefaultHttpxClient, OpenAI
+
+from agent import Agent, run_agent
+from context import SUMMARY_SECTIONS, ContextConfig, ContextManager
+from llm import AuxiliaryCalls, ModelConfig, ModelReply, chat, make_token_counter
+from memory import MemoryConfig, MemoryStore, MemoryTurn, extract_memories
+from planning import Plan
+from qgis_backend.adapter import load_qgis_tool, tool_name
+from qgis_backend.catalog import load_catalog, make_search_tool
+from qgis_backend.client import QGISClient
+from sessions import SessionStore, message_units
+from tools.base import Tool
+from tools.files import file_tools, read_file, write_file
+from tools.memory import make_memory_tools
+from tools.planning import make_planning_tools
+from tools.qgis_python import inspect_data, make_qgis_python_tools, run_python_script
+from tools.registry import ToolRegistry
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="session")
+def count_tokens():
+    return make_token_counter(ModelConfig())
+
+
+@pytest.fixture
+def qgis_dir() -> Path:
+    path = Path(os.environ.get("GIS_AGENT_QGIS_DIR", "E:/exe/qgis"))
+    for launcher in ("qgis_process-qgis-ltr.bat", "python-qgis-ltr.bat"):
+        if not (path / "bin" / launcher).is_file():
+            pytest.skip("未找到 QGIS；可设置 GIS_AGENT_QGIS_DIR 为安装目录。")
+    return path
+
+
+@pytest.fixture
+def points(tmp_path: Path) -> Path:
+    path = tmp_path / "points.geojson"
+    path.write_text(json.dumps({
+        "type": "FeatureCollection",
+        "crs": {"type": "name", "properties": {"name": "EPSG:3857"}},
+        "features": [
+            {"type": "Feature", "properties": {"id": index}, "geometry": {"type": "Point", "coordinates": [x, 0]}}
+            for index, x in enumerate((0, 1000), start=1)
+        ],
+    }), encoding="utf-8")
+    return path
+
+
+def unexpected_model_call(*args: Any) -> ModelReply:
+    pytest.fail("这个确定性检查不应调用模型。")
+
+
+def make_context(store: SessionStore, config: ContextConfig, pinned: set[str], count_tokens, call=unexpected_model_call) -> ContextManager:
+    return ContextManager(
+        store, config,
+        AuxiliaryCalls(call, store.record_model_call, count_tokens, config.request_token_limit),
+        pinned,
+    )
+
+
+def reply(call_id: str, name: str, arguments: dict[str, Any]) -> ModelReply:
+    return ModelReply({"role": "assistant", "content": None, "tool_calls": [{
+        "id": call_id, "type": "function",
+        "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)},
+    }]}, "fixed", None, "tool_calls")
+
+
+def test_v4_files_data_and_script(tmp_path: Path, qgis_dir: Path, points: Path) -> None:
+    script = tmp_path / "check_input.py"
+    assert write_file(str(script), 'print("脚本执行成功")')["ok"]
+    assert not write_file(str(script), "覆盖")["ok"]
+    first = read_file(str(script), limit=5)
+    rest = read_file(str(script), start=first["next_start"])
+    assert first["content"] + rest["content"] == script.read_text(encoding="utf-8")
+    launcher = qgis_dir / "bin" / "python-qgis-ltr.bat"
+    result = run_python_script(launcher, tmp_path / "logs", str(script))
+    assert result["ok"], result
+    assert "脚本执行成功" in Path(result["stdout_path"]).read_text(encoding="utf-8")
+    data = inspect_data(launcher, tmp_path / "logs", str(points))
+    assert data["ok"], data
+    assert data["data"]["feature_count"] == 2
+    assert data["data"]["crs"] == "EPSG:3857"
+    assert data["data"]["geometry_type"] == "Point"
+
+
+def test_v5_plan_review_and_session_restore(tmp_path: Path, count_tokens) -> None:
+    store = SessionStore(tmp_path, "planning")
+    plan = Plan()
+    registry = ToolRegistry()
+    tools = make_planning_tools(plan)
+    for tool in tools:
+        registry.register(tool)
+    replies = iter([
+        reply("plan", "update_plan", {"goal": "检查交付", "steps": [{"content": "复核结果", "status": "pending"}]}),
+        reply("review", "finish_task", {"status": "completed", "summary": "申请复核"}),
+        reply("checked", "update_plan", {"goal": "检查交付", "steps": [{"content": "复核结果", "status": "completed"}]}),
+        reply("finish", "finish_task", {"status": "completed", "summary": "复核完成"}),
+    ])
+    agent = Agent(
+        registry, tools, unexpected_model_call, plan, "按要求复核。", lambda *_: next(replies),
+        store, make_context(store, ContextConfig(), {tool.name for tool in tools}, count_tokens),
+    )
+    messages = [{"role": "user", "origin": "user", "content": "检查交付。"}]
+    assert agent.run(messages)["status"] == "completed"
+    saved = store.load()
+    results = [json.loads(item["content"]) for item in saved if item.get("tool_name") == "finish_task"]
+    assert [item["status"] for item in results] == ["review_required", "completed"]
+    assert not Plan.from_messages(saved).unfinished()
+    with pytest.raises(ValueError, match="未完成"):
+        message_units(saved[:2])
+
+
+def test_v6_result_archive_and_schema_budget(tmp_path: Path, count_tokens) -> None:
+    store = SessionStore(tmp_path, "archive")
+    result = {"ok": True, "nodata": float("nan"), "log": "结果日志" * 10000}
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "large", "function": {"name": "analysis", "arguments": "{}"}}]},
+        store.tool_message("large", "analysis", result, 2000),
+        {"role": "user", "origin": "user", "content": "继续检查。"},
+    ]
+    store.save(messages)
+    original = store.path.read_bytes()
+    stored = json.loads(store.asset_path(messages[1]["asset"]).read_text(encoding="utf-8"))
+    assert stored["log"] == result["log"] and math.isnan(stored["nodata"])
+    tools = [Tool("base", "常驻工具", {"type": "object"}, lambda: None)]
+    tools += [Tool(f"candidate_{i}", "x" * 3500, {"type": "object"}, lambda: None) for i in range(3)]
+    context = make_context(store, ContextConfig(request_token_limit=1800, tool_limit=2000), {"base"}, count_tokens)
+    for _ in range(2):
+        request = context.prepare("系统", messages, {}, tools)
+        assert request.estimated_tokens <= 1800
+        assert request.callable_names == {schema["function"]["name"] for schema in request.schemas}
+        assert "base" in request.callable_names and "candidate_2" in request.callable_names
+        assert "candidate_0" not in request.callable_names
+    assert store.path.read_bytes() == original
+    assert len(list(store.asset_dir.glob("*.json"))) == 1
+
+
+def test_v6_summary_cache_and_original_message_readback(tmp_path: Path, count_tokens) -> None:
+    store = SessionStore(tmp_path, "summary")
+    messages = [
+        {"role": "user", "origin": "user", "content": "结果必须保存为 GeoPackage。"},
+        {"role": "assistant", "content": "已记录要求。"},
+        {"role": "user", "origin": "user", "content": "继续。"},
+    ]
+    store.save(messages)
+    summary = {key: [] for key in SUMMARY_SECTIONS}
+    summary["requirements"] = [{"text": "保存为 GeoPackage", "sources": [0]}]
+    config = ContextConfig(recent_users=1)
+    fixed = lambda *_: ModelReply({"role": "assistant", "content": json.dumps(summary)}, "fixed", None, "stop")
+    context = make_context(store, config, set(), count_tokens, fixed)
+    context.compact(messages, 1)
+    restored = make_context(store, config, set(), count_tokens)
+    restored.load_state(messages)
+    assert restored.covered == 1 and restored.summary == summary
+    assert not any(item.get("content") == messages[0]["content"] for item in restored.history(messages, 2000))
+    assert json.loads(store.read_messages(0)["text"])["content"] == messages[0]["content"]
+    messages[0]["content"] = "改用 GeoJSON。"
+    store.save(messages)
+    invalidated = make_context(store, config, set(), count_tokens)
+    invalidated.load_state(messages)
+    assert invalidated.covered == 0
+
+
+def test_v6_memory_update_delete_and_no_relearning(tmp_path: Path, count_tokens) -> None:
+    session = SessionStore(tmp_path / "sessions", "memory")
+    messages = [{"role": "user", "origin": "user", "content": "长期默认输出 GeoPackage。"}]
+    session.save(messages)
+    memory = MemoryStore(MemoryConfig(tmp_path))
+    turn = MemoryTurn()
+    tools = {tool.name: tool for tool in make_memory_tools(memory, session, messages, turn)}
+    arguments = {"title": "交付格式", "body": "默认 GeoPackage", "category": "preference", "tags": ["格式"], "source_indices": [0]}
+    created = tools["remember_memory"].run(arguments)
+    assert created["ok"], created
+    assert MemoryStore(memory.config).recall("交付格式")[0]["id"] == created["id"]
+    messages.append({"role": "user", "origin": "user", "content": "将长期默认格式改为 GeoJSON。"})
+    session.save(messages)
+    arguments.update(record_id=created["id"], body="默认 GeoJSON", source_indices=[1])
+    assert tools["remember_memory"].run(arguments)["action"] == "updated"
+    assert tools["search_memory"].run({"query": created["id"]})[0]["body"] == "默认 GeoJSON"
+    assert tools["forget_memory"].run({"record_id": created["id"]})["ok"]
+    assert not MemoryStore(memory.config).records
+    auxiliary = AuxiliaryCalls(unexpected_model_call, session.record_model_call, count_tokens)
+    assert extract_memories(memory, session, messages, turn, auxiliary)["status"] == "no_new_evidence"
+
+
+def test_v6_context_continues_below_token_limit(tmp_path: Path, count_tokens) -> None:
+    store = SessionStore(tmp_path, "soft_limit")
+    messages = [{"role": "user", "origin": "user", "content": "旧要求"}]
+    for i in range(2):
+        messages.extend([
+            {"role": "assistant", "tool_calls": [{"id": str(i), "function": {"name": "analysis", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": str(i), "content": "{}"},
+        ])
+    messages.append({"role": "user", "origin": "user", "content": "x" * 4500})
+    store.save(messages)
+    context = make_context(store, ContextConfig(request_token_limit=2000, recent_users=1), set(), count_tokens)
+    context.auxiliary.used = 100
+    request = context.prepare("系统", messages, {}, [])
+    assert request.estimated_tokens <= context.config.request_token_limit
+    assert context.covered == 0
+
+
+def test_live_api_qgis_buffer_and_memory(tmp_path: Path, qgis_dir: Path, points: Path, monkeypatch: pytest.MonkeyPatch, count_tokens) -> None:
+    key = os.environ.get("DEEPSEEK_API_KEY") or dotenv_values(ROOT / ".env").get("DEEPSEEK_API_KEY")
+    if not key:
+        pytest.skip("缺少 DEEPSEEK_API_KEY，真实 API 验收未执行。")
+    model = ModelConfig()
+    client = OpenAI(
+        api_key=key, base_url=model.base_url, max_retries=3, timeout=90,
+        http_client=DefaultHttpxClient(trust_env=False),
+    )
+    qgis = QGISClient(qgis_dir / "bin" / "qgis_process-qgis-ltr.bat")
+    registry = ToolRegistry()
+    catalog = load_catalog(qgis)
+
+    def checked_write(path: str, content: str, overwrite: bool = False) -> dict[str, Any]:
+        assert Path(path).resolve().is_relative_to(tmp_path.resolve()), "测试只允许写入临时目录。"
+        return write_file(path, content, overwrite)
+
+    base_tools = [
+        make_search_tool(catalog),
+        *[Tool(tool.name, tool.description, tool.parameters, checked_write if tool.name == "write_file" else tool.function) for tool in file_tools],
+        *make_qgis_python_tools(qgis_dir / "bin" / "python-qgis-ltr.bat", tmp_path / "python_logs"),
+    ]
+    for tool in base_tools:
+        registry.register(tool)
+    sizes = []
+
+    def real_chat(messages, schemas):
+        sizes.append(count_tokens(messages, schemas))
+        assert sizes[-1] <= ContextConfig().request_token_limit
+        return chat(client, model, messages, schemas)
+
+    output = tmp_path / "buffer.gpkg"
+    report = tmp_path / "report.json"
+    prompt = f"""
+这是一个小型实际 GIS 任务。所有读写限制在 {tmp_path}，不要修改项目或其他数据。
+先检查输入 {points} 的 CRS 和要素数。
+先搜索再调用具体 native:buffer 工具，为每个点做 100 米缓冲，每象限 16 段，不融合。
+缓冲这一步必须调用具体 QGIS 工具，不能用脚本替代。保存到 {output}。
+检查输出，再写 {report}，字段为 feature_count、crs、buffer_distance_m、output_path。
+规划、执行并按原始要求复核，最后报告 completed。不要只口头声称完成。
+另请记住长期偏好：GIS 交付默认使用 GeoPackage，而不是只记住本次临时输出路径。
+""".strip()
+    inputs = iter(["acceptance", prompt, "exit"])
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    print(f"真实验收目录：{tmp_path}")
+    try:
+        run_agent(
+            registry, base_tools, partial(load_qgis_tool, qgis, catalog, registry), tmp_path / "outputs",
+            chat=real_chat, session_root=tmp_path / "sessions", context_config=ContextConfig(), count_tokens=count_tokens,
+            memory_config=MemoryConfig(tmp_path),
+        )
+    finally:
+        client.close()
+
+    session = SessionStore(tmp_path / "sessions", "acceptance")
+    messages = session.load()
+    finish_results = [json.loads(item["content"]) for item in messages if item.get("tool_name") == "finish_task"]
+    assert finish_results and finish_results[-1].get("status") == "completed", finish_results
+    assert any(item.get("status") == "review_required" for item in finish_results)
+    assert Plan.from_messages(messages).steps and not Plan.from_messages(messages).unfinished()
+    assert any(item.get("tool_name") == "search_qgis_tools" for item in messages)
+    assert any(item.get("tool_name") == tool_name("native:buffer") and json.loads(item["content"]).get("ok") for item in messages)
+    assert output.is_file() and report.is_file()
+
+    verify = tmp_path / "verify_output.py"
+    verify.write_text(
+        "import json, sys\n"
+        "from qgis.core import QgsApplication, QgsVectorLayer\n"
+        "app = QgsApplication([], False)\napp.initQgis()\n"
+        "layer = QgsVectorLayer(sys.argv[1], 'buffer', 'ogr')\n"
+        "assert layer.isValid()\n"
+        "features = list(layer.getFeatures())\n"
+        "print(json.dumps({'count':len(features), 'crs':layer.crs().authid(),\n"
+        "'valid':all(f.geometry().isGeosValid() for f in features),\n"
+        "'areas':[f.geometry().area() for f in features]}))\n"
+        "del features, layer\napp.exitQgis()\n",
+        encoding="utf-8",
+    )
+    actual = run_python_script(qgis_dir / "bin" / "python-qgis-ltr.bat", tmp_path / "verification_logs", str(verify), [str(output)])
+    assert actual["ok"], actual
+    geometry = json.loads(Path(actual["stdout_path"]).read_text(encoding="utf-8"))
+    assert geometry["count"] == 2 and geometry["crs"] == "EPSG:3857" and geometry["valid"]
+    expected_area = 64 * 100 ** 2 * math.sin(2 * math.pi / 64) / 2
+    assert geometry["areas"] == pytest.approx([expected_area, expected_area], rel=1e-6)
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["feature_count"] == 2 and data["crs"] == geometry["crs"]
+    assert data["buffer_distance_m"] == 100 and Path(data["output_path"]).resolve() == output.resolve()
+    remembered = MemoryStore(MemoryConfig(tmp_path)).recall("交付格式")
+    assert any(item.get("category") == "preference" and any(word in item["body"].lower() for word in ("geopackage", "gpkg")) for item in remembered), remembered
+    calls = [json.loads(line) for line in (session.root / "acceptance.calls.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert not any(item.get("purpose") == "memory_maintenance" and item.get("status") == "failed" for item in calls), calls[-1]
+    print(f"验收通过：2 个 100 米缓冲面、CRS、面积、报告、计划复核与跨 Session 记忆；调用 {len(sizes)} 次，目录：{tmp_path}")

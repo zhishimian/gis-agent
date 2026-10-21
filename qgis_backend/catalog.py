@@ -52,8 +52,9 @@ def make_search_tool(
             "Search the QGIS algorithm catalog using short English "
             "keywords. Translate Chinese requests into English. "
             "Search separately for different workflow steps when "
-            "necessary. Matching concrete tools become available "
-            "in the next response."
+            "necessary. Results are candidates; only tools whose schemas "
+            "are actually provided can be called. Search by exact "
+            "algorithm ID to rediscover a candidate."
         ),
         parameters={
             "type": "object",

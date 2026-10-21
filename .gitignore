@@ -11,3 +11,5 @@ outputs/
 data/
 
 docs/
+
+.memory/

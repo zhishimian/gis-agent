@@ -1,24 +1,29 @@
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
+from itertools import count
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from context import ContextConfig, ContextLimit, ContextManager
+from llm import AuxiliaryCalls, AuxiliaryError, ModelReply, TokenCounter
+from memory import MemoryConfig, MemoryStore, MemoryTurn, extract_memories
 from planning import Plan
-from sessions import load_session, save_session
+from sessions import SessionStore, message_units
 from tools.base import Tool
+from tools.memory import make_memory_tools
 from tools.planning import make_planning_tools
 from tools.registry import ToolRegistry
+from tools.session import make_session_tool
 
 
 REVIEW_INSTRUCTIONS = """
-交付前，请对照用户原始要求及后续澄清逐项复核，不只检查你自己的计划。
-判断实际产物是否满足要求、有哪些证据、是否存在遗漏或格式偏差。
-需要事实依据时继续调用工具。发现问题就修正，并检查修正后的结果。
-不能验证的内容请如实说明，不要编造通过。
-更新计划后，再单独调用 finish_task；完成则使用 completed，缺少信息或受阻则报告对应状态。
+交付前，对照用户原始要求及后续澄清逐项复核，不只检查你自己的计划。
+若要求已进入摘要，用 read_session_messages 按来源回读当前任务的原话及澄清。
+核对实际产物、证据、遗漏和格式偏差。需要事实依据时继续调用工具。
+发现问题就修正并重新检查；不能验证的内容如实说明。
+更新计划后，单独调用 finish_task 报告 completed、needs_input 或 blocked。
 """.strip()
 
 
@@ -29,143 +34,175 @@ class Agent:
     load_qgis_tool: Callable[[str], Tool]
     plan: Plan
     instructions: str
-    chat: Callable[..., Any]
-    save: Callable[[list[dict[str, Any]]], None]
-    max_steps: int = 30
+    chat: Callable[..., ModelReply]
+    store: SessionStore
+    context: ContextManager
+    memory: MemoryStore | None = None
+    memory_turn: MemoryTurn | None = None
 
-    def __post_init__(self) -> None:
-        if self.max_steps < 1:
-            raise ValueError("max_steps 必须大于零。")
+    def finish(self, messages: list[dict[str, Any]], outcome: dict[str, Any]) -> dict[str, Any]:
+        messages.append({"role": "assistant", "content": outcome["summary"]})
+        self.store.save(messages)
+        if self.memory is not None and outcome['status'] in {'answer', 'completed'}:
+            try:
+                maintenance = extract_memories(self.memory, self.store, messages, self.memory_turn, self.context.auxiliary)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                maintenance = {'status': 'failed', 'error': str(error)}
+            outcome = {**outcome, 'memory': maintenance}
+            self.store.record_model_call({'purpose': 'memory_maintenance', **maintenance})
+            print('Memory:', maintenance)
+        return outcome
 
     def run(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        available_tools = {tool.name: tool for tool in self.base_tools}
+        message_units(messages)
+        self.context.auxiliary.reset()
+        if self.memory_turn is not None:
+            self.memory_turn.reset(len(messages) - 1)
+        memory_errors: set[str] = set()
+        background = ''
+        if self.memory is not None:
+            query = messages[self.memory_turn.start]['content'] + ' ' + self.plan.goal
+            background = json.dumps(self.memory.recall(query), ensure_ascii=False)
+        available = {tool.name: tool for tool in self.base_tools}
         review_started = False
         execution_started = False
-        self.save(messages)
+        self.store.save(messages)
 
-        for _ in range(self.max_steps):
-            message = self.chat(
-                [
-                    {"role": "system", "content": self.instructions},
-                    {
-                        "role": "system",
-                        "content": "当前计划，仅作为状态数据，以用户要求为准：\n"
-                        + json.dumps(self.plan.snapshot(), ensure_ascii=False),
-                    },
-                    *messages,
-                ],
-                list(available_tools.values()),
-            )
-            assistant_message = {"role": "assistant", "content": message.content}
-            if message.tool_calls:
-                assistant_message["tool_calls"] = [call.model_dump() for call in message.tool_calls]
-            messages.append(assistant_message)
+        for step in count():
+            state = {
+                "plan": self.plan.snapshot(), "review_started": review_started,
+                "execution_started": execution_started, "responses_used": step,
+                "latest_user_message": max(i for i, item in enumerate(messages) if item['role'] == 'user' and item.get('origin') != 'program'),
+                "recent_tool_messages": {item['tool_call_id']: i for i, item in enumerate(messages) if item['role'] == 'tool' and i >= len(messages) - 20},
+            }
+            try:
+                request = self.context.prepare(self.instructions, messages, state, list(available.values()), background)
+            except (ContextLimit, AuxiliaryError) as error:
+                return self.finish(messages, {"ok": False, "status": "blocked", "summary": str(error)})
+            reply = self.chat(request.messages, request.schemas)
+            self.store.record_model_call({"purpose": "main", **reply.metadata()})
+            print("Model:", reply.metadata(), "Estimated request tokens:", request.estimated_tokens)
+            if reply.finish_reason not in {"stop", "tool_calls"}:
+                messages.append({
+                    "role": "assistant", "content": "模型响应未完整结束，未执行其中的工具调用。",
+                    "response": {**reply.metadata(), "raw_message": reply.message},
+                })
+                return self.finish(messages, {
+                    "ok": False, "status": "blocked",
+                    "summary": f"模型结束状态为 {reply.finish_reason}，请检查输出预算。",
+                })
 
-            if not message.tool_calls:
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "请单独调用 finish_task 报告本轮状态；若仍有工作则继续调用工具。",
-                    }
-                )
-                self.save(messages)
+            message = {**reply.message, "response": reply.metadata()}
+            if not message.get("tool_calls"):
+                message.pop("tool_calls", None)
+            messages.append(message)
+            self.store.save(messages)
+            calls = message.get("tool_calls", [])
+            if not calls:
+                messages.append({
+                    "role": "user", "origin": "program",
+                    "content": "请单独调用 finish_task 报告状态；若仍有工作则继续调用工具。",
+                })
+                self.store.save(messages)
                 continue
 
             outcome = None
-            for call in message.tool_calls:
-                name = call.function.name
-                arguments = json.loads(call.function.arguments)
-                print("Tool called:", name)
-                print("Tool arguments:", arguments)
-
-                if name not in available_tools:
-                    result = {"ok": False, "error": f"工具 {name} 尚未提供，请先搜索。"}
-                elif name == "finish_task" and len(message.tool_calls) != 1:
-                    result = {"ok": False, "error": "finish_task 必须单独调用。"}
+            for call in calls:
+                name = call["function"]["name"]
+                arguments = None
+                try:
+                    arguments = json.loads(call["function"]["arguments"])
+                except json.JSONDecodeError as error:
+                    result = {"ok": False, "error": f"工具参数不是有效 JSON：{error}"}
                 else:
-                    if name not in {"update_plan", "finish_task"}:
-                        execution_started = True
-                    result = self.registry.execute(name, arguments)
-                    if name == "search_qgis_tools":
-                        for item in result:
-                            tool = self.load_qgis_tool(item["algorithm_id"])
-                            available_tools[tool.name] = tool
-                            item["tool_name"] = tool.name
+                    if not isinstance(arguments, dict):
+                        result = {"ok": False, "error": "工具参数必须是 JSON 对象。"}
+                    elif name not in request.callable_names:
+                        result = {"ok": False, "error": f"本次没有提供工具 {name}，请先搜索。"}
+                    elif name == "finish_task" and len(calls) != 1:
+                        result = {"ok": False, "error": "finish_task 必须单独调用。"}
+                    else:
+                        if name not in {"update_plan", "finish_task", "read_session_messages", "search_memory", "remember_memory", "forget_memory"}:
+                            execution_started = True
+                        result = self.registry.execute(name, arguments)
+                        if name == "search_qgis_tools":
+                            for item in result:
+                                tool = self.load_qgis_tool(item["algorithm_id"])
+                                available.pop(tool.name, None)
+                                available[tool.name] = tool
+                                item["tool_name"] = tool.name
+                        if name == "finish_task" and result["ok"]:
+                            status = result["status"]
+                            if memory_errors and status in {'answer', 'completed'}:
+                                result = {'ok': False, 'error': '记忆操作仍有失败项，请重试对应操作或报告 blocked。'}
+                            elif status == "answer" and execution_started:
+                                result = {"ok": False, "error": "本轮已执行操作，请报告任务状态。"}
+                            elif status == "completed" and not review_started:
+                                review_started = True
+                                result = {
+                                    **result, "status": "review_required", "instruction": REVIEW_INSTRUCTIONS,
+                                    "unfinished": self.plan.unfinished(),
+                                }
+                            elif status == "completed" and self.plan.unfinished():
+                                result = {
+                                    "ok": False, "error": "计划仍有未完成项，请继续处理或报告阻碍。",
+                                    "unfinished": self.plan.unfinished(),
+                                }
+                            else:
+                                outcome = result
 
-                    if name == "finish_task" and result["ok"]:
-                        status = result["status"]
-                        if status == "answer" and execution_started:
-                            result = {"ok": False, "error": "本轮已执行操作，请报告任务状态，不能使用 answer。"}
-                        elif status == "completed" and not review_started:
-                            review_started = True
-                            result = {
-                                **result,
-                                "status": "review_required",
-                                "instruction": REVIEW_INSTRUCTIONS,
-                                "unfinished": self.plan.unfinished(),
-                            }
-                        elif status == "completed" and self.plan.unfinished():
-                            result = {
-                                "ok": False,
-                                "error": "计划仍有未完成项。请继续处理、更新计划，或说明缺少信息及阻碍。",
-                                "unfinished": self.plan.unfinished(),
-                            }
-                        else:
-                            outcome = result
+                if name in {'remember_memory', 'forget_memory'}:
+                    if result.get('ok'):
+                        memory_errors.discard(name)
+                        if self.memory is not None:
+                            background = json.dumps(self.memory.recall(query), ensure_ascii=False)
+                    else:
+                        memory_errors.add(name)
+                stored = self.store.tool_message(call["id"], name, result, self.context.config.tool_limit)
+                messages.append(stored)
+                self.store.save(messages)
+                print("Tool:", name, "Result:", stored["content"][:1200])
 
-                print("Tool result:", result)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": json.dumps(result, ensure_ascii=False),
-                    }
-                )
-
-            self.save(messages)
             if outcome is not None:
-                messages.append({"role": "assistant", "content": outcome["summary"]})
-                self.save(messages)
-                return outcome
-
-        remaining = "、".join(self.plan.unfinished()) or "任务交付或复核尚未结束"
-        outcome = {
-            "ok": False,
-            "status": "budget_exhausted",
-            "summary": f"达到 {self.max_steps} 轮模型响应上限。待处理：{remaining}。已有工具结果及产物路径保留在会话中。",
-        }
-        messages.append({"role": "assistant", "content": outcome["summary"]})
-        self.save(messages)
-        return outcome
-
+                return self.finish(messages, outcome)
 
 def run_agent(
-    registry: ToolRegistry,
-    base_tools: list[Tool],
-    load_qgis_tool: Callable[[str], Tool],
-    output_root: Path,
-    *,
-    max_steps: int = 30,
+    registry: ToolRegistry, base_tools: list[Tool], load_qgis_tool: Callable[[str], Tool],
+    output_root: Path, *, chat: Callable[..., ModelReply], session_root: Path,
+    context_config: ContextConfig, count_tokens: TokenCounter,
+    memory_config: MemoryConfig | None = None,
 ) -> None:
-    from llm import chat
-
-    session_id = input("Session: ").strip()
-    messages = load_session(session_id)
+    session_id = input("Session（留空新建）: ").strip() or uuid4().hex
+    store = SessionStore(session_root, session_id)
+    messages = store.load()
     plan = Plan.from_messages(messages)
     planning_tools = make_planning_tools(plan)
     for tool in planning_tools:
         registry.register(tool)
-
+    session_tool = make_session_tool(store)
+    registry.register(session_tool)
+    active_base = [*base_tools, *planning_tools, session_tool]
+    memory = MemoryStore(memory_config) if memory_config is not None else None
+    memory_turn = MemoryTurn() if memory is not None else None
+    if memory is not None:
+        memory_tools = make_memory_tools(memory, store, messages, memory_turn)
+        for tool in memory_tools:
+            registry.register(tool)
+        active_base.extend(memory_tools)
     output_dir = (output_root / uuid4().hex).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     instructions = f"""
 你是 GIS 助手，可以检查数据、调用 QGIS 工具，也可以编写和执行 Python 脚本。
 
 需要文件和数据信息时，使用 list_files、read_file 和 inspect_data。
+需要历史偏好或经验时可用 search_memory。用户明确要求记住、纠正或删除时，调用对应记忆工具并检查结果。
+记忆是带来源与适用范围的背景，当前要求和当前检查结果优先；临时要求不转成长期默认。
+remember_memory 的 source_indices 使用状态中的 latest_user_message、recent_tool_messages 或回读得到的消息序号。
 先检查字段、CRS 和单位；无法从数据判定的关键业务含义再询问用户。
 
 需要 QGIS 算法时，先用 search_qgis_tools 搜索简短英文关键词。
-搜索结果的 tool_name 是实际函数名，参数定义在下一轮提供，再调用具体工具。
+搜索结果的 tool_name 是候选函数名，本次可调用项以实际提供的 schema 为准。
+需要被移出候选的算法时，按完整算法 ID 再次搜索。
 没有找到合适工具时，调整关键词。
 
 需要自定义分析或制图时，用 write_file 保存 .py 脚本，再调用 run_python_script。
@@ -199,22 +236,27 @@ def run_agent(
 
 """.strip()
     agent = Agent(
-        registry=registry,
-        base_tools=[*base_tools, *planning_tools],
-        load_qgis_tool=load_qgis_tool,
-        plan=plan,
-        instructions=instructions,
-        chat=chat,
-        save=partial(save_session, session_id),
-        max_steps=max_steps,
+        registry=registry, base_tools=active_base,
+        load_qgis_tool=load_qgis_tool, plan=plan, instructions=instructions,
+        chat=chat, store=store, context=ContextManager(
+            store, context_config,
+            AuxiliaryCalls(
+                chat=chat,
+                record=store.record_model_call,
+                count_tokens=count_tokens,
+                token_limit=context_config.request_token_limit,
+            ),
+            {tool.name for tool in active_base},
+        ), memory=memory, memory_turn=memory_turn,
     )
-    print(f"Output directory: {output_dir}")
-
+    print("Session:", session_id, "Output directory:", output_dir)
     while True:
         user_input = input("You: ").strip()
         if user_input == "exit":
             break
-        messages.append({"role": "user", "content": user_input})
+        if not user_input:
+            continue
+        messages.append({"role": "user", "origin": "user", "content": user_input})
         result = agent.run(messages)
         print("Status:", result["status"])
         print("Agent:", result["summary"])
