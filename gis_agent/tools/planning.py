@@ -1,7 +1,7 @@
 from typing import Any
 
-from planning import Plan, STEP_STATUSES
-from tools.base import Tool
+from gis_agent.core.planning import Plan, STEP_STATUSES
+from gis_agent.tools.base import Tool
 
 
 FINISH_STATUSES = ("completed", "needs_input", "blocked", "answer")

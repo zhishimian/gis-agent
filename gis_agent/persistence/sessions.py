@@ -5,10 +5,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from storage import json_text, text_preview, write_json
+from gis_agent.persistence.json import json_text, text_preview, write_json
 
 
-SESSION_DIR = Path(__file__).resolve().parent / "sessions"
 CONTROL_TOOLS = {"update_plan", "finish_task"}
 
 
@@ -83,16 +82,20 @@ class SessionStore:
             raise ValueError("工具结果引用超出了当前 Session 目录。")
         return path
 
-    def load(self) -> list[dict[str, Any]]:
+    def read_record(self) -> list[dict[str, Any]]:
         if not self.path.exists():
-            return [{"role": "system", "content": "你是 GIS 专家。"}]
+            return []
         messages = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(messages, list):
             raise ValueError("Session 顶层必须是消息列表。")
-        message_units(messages)
         for message in messages:
             if "asset" in message and not self.asset_path(message["asset"]).is_file():
                 raise FileNotFoundError(f"工具结果资产缺失：{message['asset']}")
+        return messages
+
+    def load(self) -> list[dict[str, Any]]:
+        messages = self.read_record()
+        message_units(messages)
         return messages
 
     def save(self, messages: list[dict[str, Any]]) -> None:
@@ -166,11 +169,3 @@ class SessionStore:
                     item["content"] = result_view(value, limit, source)
             projected.append(item)
         return projected
-
-
-def load_session(session_id: str) -> list[dict[str, Any]]:
-    return SessionStore(SESSION_DIR, session_id).load()
-
-
-def save_session(session_id: str, messages: list[dict[str, Any]]) -> None:
-    SessionStore(SESSION_DIR, session_id).save(messages)

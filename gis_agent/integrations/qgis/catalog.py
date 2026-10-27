@@ -1,7 +1,7 @@
 from functools import partial
 from typing import Any
-from qgis_backend.client import QGISClient
-from tools.base import Tool
+from gis_agent.integrations.qgis.client import QGISClient
+from gis_agent.tools.base import Tool
 
 def load_catalog(
         client:QGISClient,

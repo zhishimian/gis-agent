@@ -1,12 +1,16 @@
 import json
+import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class QGISClient:
-    launcher:Path=Path("E:/exe/qgis/bin/qgis_process-qgis-ltr.bat")
+    launcher:Path
     timeout:int=300
 
     def _call(self,*arguments:str,
@@ -27,10 +31,10 @@ class QGISClient:
         response=self._call(*arguments)
 
         if response.stderr:
-            print(response.stderr,end="")
+            logger.info("%s", response.stderr.rstrip())
 
         if response.returncode!=0:
-            print(response.stdout,end="")
+            logger.error("%s", response.stdout.rstrip())
         response.check_returncode()
         return json.loads(response.stdout)
 

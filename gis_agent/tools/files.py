@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any
 
-from tools.base import Tool
+from gis_agent.tools.base import Tool
 
 
 def list_files(path: str) -> dict[str, Any]:

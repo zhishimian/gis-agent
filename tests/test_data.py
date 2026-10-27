@@ -1,7 +1,11 @@
 import json
-from pathlib import Path
+import os
 
-from tools.qgis_python import inspect_data
+import pytest
+from pathlib import Path
+from dotenv import dotenv_values
+
+from gis_agent.tools.qgis_python import inspect_data
 
 
 def test_inspect_vector(tmp_path: Path) -> None:
@@ -21,8 +25,11 @@ def test_inspect_vector(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
+    directory = os.environ.get("GIS_AGENT_QGIS_DIR") or dotenv_values(Path(__file__).resolve().parents[1] / ".env").get("GIS_AGENT_QGIS_DIR")
+    if not directory:
+        pytest.skip("请设置 GIS_AGENT_QGIS_DIR。")
     result = inspect_data(
-        Path("E:/exe/qgis/bin/python-qgis-ltr.bat"),
+        Path(directory) / "bin" / "python-qgis-ltr.bat",
         tmp_path / "logs",
         str(source),
     )

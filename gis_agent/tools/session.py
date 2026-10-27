@@ -1,5 +1,5 @@
-from sessions import SessionStore
-from tools.base import Tool
+from gis_agent.persistence.sessions import SessionStore
+from gis_agent.tools.base import Tool
 
 
 def make_session_tool(store: SessionStore) -> Tool:

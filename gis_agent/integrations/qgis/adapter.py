@@ -5,9 +5,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from qgis_backend.client import QGISClient
-from tools.base import Tool
-from tools.registry import ToolRegistry
+from gis_agent.integrations.qgis.client import QGISClient
+from gis_agent.tools.base import Tool
+from gis_agent.tools.registry import ToolRegistry
 
 STRING_TYPES={"string","expression","crs","extent","point","file","folder","source","vector","raster","mesh","pointcloud","annotation","maplayer","layout","layoutitem","coordinateoperation",}
 

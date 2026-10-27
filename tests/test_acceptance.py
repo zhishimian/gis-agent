@@ -3,29 +3,35 @@
 import json
 import math
 import os
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
 from dotenv import dotenv_values
+from langgraph.checkpoint.sqlite import SqliteSaver
 from openai import DefaultHttpxClient, OpenAI
 
-from agent import Agent, run_agent
-from context import SUMMARY_SECTIONS, ContextConfig, ContextManager
-from llm import AuxiliaryCalls, ModelConfig, ModelReply, chat, make_token_counter
-from memory import MemoryConfig, MemoryStore, MemoryTurn, extract_memories
-from planning import Plan
-from qgis_backend.adapter import load_qgis_tool, tool_name
-from qgis_backend.catalog import load_catalog, make_search_tool
-from qgis_backend.client import QGISClient
-from sessions import SessionStore, message_units
-from tools.base import Tool
-from tools.files import file_tools, read_file, write_file
-from tools.memory import make_memory_tools
-from tools.planning import make_planning_tools
-from tools.qgis_python import inspect_data, make_qgis_python_tools, run_python_script
-from tools.registry import ToolRegistry
+from gis_agent.agent import Agent
+from gis_agent.prompts import render_prompt
+from gis_agent.tools.session import make_session_tool
+from gis_agent.core.context import SUMMARY_SECTIONS, ContextConfig, ContextManager
+from gis_agent.core.auxiliary import AuxiliaryCalls
+from gis_agent.core.model import ModelConfig, ModelReply, TokenCounter
+from gis_agent.integrations.llm import chat, make_token_counter
+from gis_agent.core.memory import MemoryConfig, MemoryStore, MemoryTurn, extract_memories
+from gis_agent.core.planning import Plan
+from gis_agent.integrations.qgis.adapter import load_qgis_tool, tool_name
+from gis_agent.integrations.qgis.catalog import load_catalog, make_search_tool
+from gis_agent.integrations.qgis.client import QGISClient
+from gis_agent.persistence.sessions import SessionStore, message_units
+from gis_agent.tools.base import Tool
+from gis_agent.tools.files import file_tools, read_file, write_file
+from gis_agent.tools.memory import make_memory_tools
+from gis_agent.tools.planning import make_planning_tools
+from gis_agent.tools.qgis_python import inspect_data, make_qgis_python_tools, run_python_script
+from gis_agent.tools.registry import ToolRegistry
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +44,10 @@ def count_tokens():
 
 @pytest.fixture
 def qgis_dir() -> Path:
-    path = Path(os.environ.get("GIS_AGENT_QGIS_DIR", "E:/exe/qgis"))
+    value = os.environ.get("GIS_AGENT_QGIS_DIR") or dotenv_values(ROOT / ".env").get("GIS_AGENT_QGIS_DIR")
+    if not value:
+        pytest.skip("请设置 GIS_AGENT_QGIS_DIR。")
+    path = Path(value).expanduser().resolve()
     for launcher in ("qgis_process-qgis-ltr.bat", "python-qgis-ltr.bat"):
         if not (path / "bin" / launcher).is_file():
             pytest.skip("未找到 QGIS；可设置 GIS_AGENT_QGIS_DIR 为安装目录。")
@@ -213,7 +222,141 @@ def test_v6_context_continues_below_token_limit(tmp_path: Path, count_tokens) ->
     assert context.covered == 0
 
 
-def test_live_api_qgis_buffer_and_memory(tmp_path: Path, qgis_dir: Path, points: Path, monkeypatch: pytest.MonkeyPatch, count_tokens) -> None:
+def make_graph_agent(
+    store: SessionStore, call: Callable[..., ModelReply], count_tokens: TokenCounter,
+    saver: SqliteSaver, extra_tools: tuple[Tool, ...] = (),
+) -> Agent:
+    plan = Plan.from_messages(store.read_record())
+    tools = [*make_planning_tools(plan), *extra_tools]
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register(tool)
+    return Agent(
+        registry, tools, unexpected_model_call, plan, "按要求执行并复核。", call, store,
+        make_context(store, ContextConfig(), {tool.name for tool in tools}, count_tokens, call),
+        checkpointer=saver,
+    )
+
+
+def test_v71_graph_continues_beyond_thirty_responses(tmp_path: Path, count_tokens) -> None:
+    output = tmp_path / "progress.txt"
+
+    def record_progress() -> dict[str, Any]:
+        with output.open("a", encoding="utf-8") as file:
+            file.write("完成一次\n")
+        return {"ok": True}
+
+    tool = Tool("record_progress", "记录执行结果", {"type": "object"}, record_progress)
+    pending = {"goal": "执行记录", "steps": [{"content": "执行并复核", "status": "pending"}]}
+    completed = {"goal": "执行记录", "steps": [{"content": "执行并复核", "status": "completed"}]}
+    replies = iter([
+        reply("plan", "update_plan", pending),
+        *(reply(f"record_{index}", tool.name, {}) for index in range(35)),
+        reply("review", "finish_task", {"status": "completed", "summary": "请求复核"}),
+        reply("checked", "update_plan", completed),
+        reply("finish", "finish_task", {"status": "completed", "summary": "完成"}),
+    ])
+    store = SessionStore(tmp_path / "sessions", "long_run")
+    with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
+        agent = make_graph_agent(store, lambda *_: next(replies), count_tokens, saver, (tool,))
+        assert agent.run([{"role": "user", "origin": "user", "content": "执行记录。"}])["status"] == "completed"
+        snapshot = agent.graph.get_state(agent.options())
+        assert not snapshot.next
+        assert snapshot.values["responses_used"] == 39
+        assert "messages" not in snapshot.values
+    assert len(output.read_text(encoding="utf-8").splitlines()) == 35
+    message_units(store.load())
+
+
+def test_v71_sqlite_resume_preserves_review_and_tool_results(tmp_path: Path, count_tokens) -> None:
+    output = tmp_path / "result.txt"
+
+    def save_result() -> dict[str, Any]:
+        with output.open("a", encoding="utf-8") as file:
+            file.write("成果\n")
+        return {"ok": True}
+
+    tool = Tool("save_result", "保存成果", {"type": "object"}, save_result)
+    replies = iter([
+        reply("save", tool.name, {}),
+        reply("review", "finish_task", {"status": "completed", "summary": "请求复核"}),
+    ])
+
+    def disconnected_chat(*args: Any) -> ModelReply:
+        response = next(replies, None)
+        if response is None:
+            raise ConnectionError("模拟复核期间连接中断。")
+        return response
+
+    store = SessionStore(tmp_path / "sessions", "resume")
+    checkpoint = str(tmp_path / "checkpoints.sqlite")
+    with SqliteSaver.from_conn_string(checkpoint) as saver:
+        agent = make_graph_agent(store, disconnected_chat, count_tokens, saver, (tool,))
+        with pytest.raises(ConnectionError):
+            agent.run([{"role": "user", "origin": "user", "content": "保存成果并复核。"}])
+    with SqliteSaver.from_conn_string(checkpoint) as saver:
+        agent = make_graph_agent(
+            store, lambda *_: reply("finish", "finish_task", {"status": "completed", "summary": "复核完成"}),
+            count_tokens, saver, (tool,),
+        )
+        assert agent.resume(store.read_record())["status"] == "completed"
+        assert agent.graph.get_state(agent.options()).values["responses_used"] == 3
+    assert output.read_text(encoding="utf-8") == "成果\n"
+    results = [json.loads(item["content"]) for item in store.load() if item.get("tool_name") == "finish_task"]
+    assert [item["status"] for item in results] == ["review_required", "completed"]
+
+
+def test_v71_uncertain_tool_execution_is_not_replayed(tmp_path: Path, count_tokens) -> None:
+    output = tmp_path / "partial.txt"
+
+    def interrupted_write() -> dict[str, Any]:
+        with output.open("a", encoding="utf-8") as file:
+            file.write("已经写入\n")
+        raise OSError("模拟工具写入成果后中断。")
+
+    tool = Tool("interrupted_write", "写入成果", {"type": "object"}, interrupted_write)
+    store = SessionStore(tmp_path / "sessions", "uncertain")
+    checkpoint = str(tmp_path / "checkpoints.sqlite")
+    with SqliteSaver.from_conn_string(checkpoint) as saver:
+        agent = make_graph_agent(store, lambda *_: reply("write", tool.name, {}), count_tokens, saver, (tool,))
+        with pytest.raises(OSError):
+            agent.run([{"role": "user", "origin": "user", "content": "写入成果。"}])
+    with SqliteSaver.from_conn_string(checkpoint) as saver:
+        agent = make_graph_agent(store, unexpected_model_call, count_tokens, saver, (tool,))
+        with pytest.raises(ValueError, match="检查点"):
+            agent.resume(store.read_record())
+    assert output.read_text(encoding="utf-8") == "已经写入\n"
+    assert store.read_record()[1]["executions"]["write"] == "started"
+
+
+def test_v71_invalid_memory_arguments_cannot_complete_task(tmp_path: Path, count_tokens) -> None:
+    store = SessionStore(tmp_path / "sessions", "memory_error")
+    messages = [{"role": "user", "origin": "user", "content": "请记住默认使用 GeoPackage。"}]
+    plan = Plan()
+    memory = MemoryStore(MemoryConfig(tmp_path, auto_extract=False))
+    turn = MemoryTurn()
+    tools = [*make_planning_tools(plan), *make_memory_tools(memory, store, messages, turn)]
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register(tool)
+    invalid = reply("remember", "remember_memory", {})
+    invalid.message["tool_calls"][0]["function"]["arguments"] = "{"
+    replies = iter([
+        invalid,
+        reply("answer", "finish_task", {"status": "answer", "summary": "已记住"}),
+        reply("blocked", "finish_task", {"status": "blocked", "summary": "记忆写入未完成"}),
+    ])
+    call = lambda *_: next(replies)
+    agent = Agent(
+        registry, tools, unexpected_model_call, plan, "按要求保存记忆。", call, store,
+        make_context(store, ContextConfig(), {tool.name for tool in tools}, count_tokens, call),
+        memory=memory, memory_turn=turn,
+    )
+    assert agent.run(messages)["status"] == "blocked"
+    assert not memory.records
+
+
+def test_live_api_qgis_buffer_and_memory(tmp_path: Path, qgis_dir: Path, points: Path, count_tokens) -> None:
     key = os.environ.get("DEEPSEEK_API_KEY") or dotenv_values(ROOT / ".env").get("DEEPSEEK_API_KEY")
     if not key:
         pytest.skip("缺少 DEEPSEEK_API_KEY，真实 API 验收未执行。")
@@ -253,17 +396,26 @@ def test_live_api_qgis_buffer_and_memory(tmp_path: Path, qgis_dir: Path, points:
 缓冲这一步必须调用具体 QGIS 工具，不能用脚本替代。保存到 {output}。
 检查输出，再写 {report}，字段为 feature_count、crs、buffer_distance_m、output_path。
 规划、执行并按原始要求复核，最后报告 completed。不要只口头声称完成。
-另请记住长期偏好：GIS 交付默认使用 GeoPackage，而不是只记住本次临时输出路径。
+另请记住长期偏好：以后的 GIS 交付默认使用 GeoPackage。
 """.strip()
-    inputs = iter(["acceptance", prompt, "exit"])
-    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
-    print(f"真实验收目录：{tmp_path}")
+    session_store = SessionStore(tmp_path / "sessions", "acceptance")
+    plan = Plan()
+    memory = MemoryStore(MemoryConfig(tmp_path))
+    turn = MemoryTurn()
+    messages = [{"role": "user", "origin": "user", "content": prompt}]
+    extra = [*make_planning_tools(plan), make_session_tool(session_store)]
+    extra.extend(make_memory_tools(memory, session_store, messages, turn))
+    for tool in extra:
+        registry.register(tool)
+    active = [*base_tools, *extra]
     try:
-        run_agent(
-            registry, base_tools, partial(load_qgis_tool, qgis, catalog, registry), tmp_path / "outputs",
-            chat=real_chat, session_root=tmp_path / "sessions", context_config=ContextConfig(), count_tokens=count_tokens,
-            memory_config=MemoryConfig(tmp_path),
+        agent = Agent(
+            registry, active, partial(load_qgis_tool, qgis, catalog, registry), plan,
+            render_prompt("system.j2", output_dir=tmp_path / "outputs"), real_chat,
+            session_store, make_context(session_store, ContextConfig(), {tool.name for tool in active}, count_tokens, real_chat),
+            memory=memory, memory_turn=turn,
         )
+        assert agent.run(messages)["status"] == "completed"
     finally:
         client.close()
 

@@ -1,4 +1,4 @@
-from tools.base import Tool
+from gis_agent.tools.base import Tool
 
 class ToolRegistry:
     def __init__(self):

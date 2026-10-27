@@ -1,8 +1,8 @@
 from typing import Any
 
-from memory import CATEGORIES, MemoryStore, MemoryTurn, make_scope, memory_sources, normalized
-from sessions import SessionStore
-from tools.base import Tool
+from gis_agent.core.memory import CATEGORIES, MemoryStore, MemoryTurn, make_scope, memory_sources, normalized
+from gis_agent.persistence.sessions import SessionStore
+from gis_agent.tools.base import Tool
 
 
 def make_memory_tools(

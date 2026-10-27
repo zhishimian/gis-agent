@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from tools.base import Tool
+from gis_agent.tools.base import Tool
 
 
 def run_python_script(
@@ -48,7 +48,7 @@ def run_python_script(
 
 
 def inspect_data(launcher: Path, log_dir: Path, source: str) -> dict[str, Any]:
-    script = Path(__file__).resolve().parents[1] / "qgis_backend" / "inspect_data.py"
+    script = Path(__file__).resolve().parents[1] / "integrations" / "qgis" / "inspect_data.py"
     result = run_python_script(launcher, log_dir, str(script), [source])
     if result["ok"]:
         result["data"] = json.loads(Path(result["stdout_path"]).read_text(encoding="utf-8"))
