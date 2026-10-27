@@ -23,7 +23,7 @@ from gis_agent.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 PASSIVE_TOOLS = {
     'update_plan', 'finish_task', 'read_session_messages',
-    'search_memory', 'remember_memory', 'forget_memory',
+    'search_memory', 'remember_memory', 'forget_memory', 'read_verification',
 }
 
 
@@ -57,6 +57,7 @@ class Agent:
     memory: MemoryStore | None = None
     memory_turn: MemoryTurn | None = None
     checkpointer: BaseCheckpointSaver | None = None
+    require_review: bool = True
     graph: Any = field(init=False, repr=False)
     messages: list[dict[str, Any]] = field(init=False, repr=False)
 
@@ -102,8 +103,8 @@ class Agent:
         self.messages = messages
         self.context.auxiliary.reset()
         start = len(messages) - 1
-        if start < 0 or messages[start]['role'] != 'user' or messages[start].get('origin') != 'user':
-            raise ValueError('新一轮必须从真实用户输入开始。')
+        if start < 0 or messages[start]['role'] != 'user' or messages[start].get('origin') not in {'user', 'delegation'}:
+            raise ValueError('新一轮必须从用户输入或委派输入开始。')
         if self.memory_turn is not None:
             self.memory_turn.reset(start)
         self.store.save(messages)
@@ -247,7 +248,7 @@ class Agent:
             return {'ok': False, 'error': '记忆操作仍有失败项，请重试对应操作或报告 blocked。'}
         if status == 'answer' and state['execution_started']:
             return {'ok': False, 'error': '本轮已执行操作，请报告任务状态。'}
-        if status == 'completed' and not state['review_started']:
+        if status == 'completed' and self.require_review and not state['review_started']:
             state['review_started'] = True
             return {**result, 'status': 'review_required', 'instruction': render_prompt('review.txt'), 'unfinished': self.plan.unfinished()}
         if status == 'completed' and self.plan.unfinished():
