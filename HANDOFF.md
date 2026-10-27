@@ -2,9 +2,13 @@
 
 ## 当前实现
 
-V7.1 已按 `docs/v7.1-langgraph.md` 迁移。根目录的 Python 入口为 `main.py`，实现位于 `gis_agent/`。配置在 `config.py`，组件组装在 `application.py`，交互在 `cli.py`，提示词在 `prompts/`。
+V7.2 已按 `docs/v7.2-model-providers.md` 应用，结构沿用 V7.1 的包划分。根目录的 Python 入口为 `main.py`，实现位于 `gis_agent/`。配置在 `config.py`，组件组装在 `application.py`，交互在 `cli.py`，提示词在 `prompts/`。
 
 运行时通过环境变量或项目 `.env` 设置 `GIS_AGENT_QGIS_DIR`。两个 QGIS 启动器可分别配置。相对记录路径按项目目录解析。模型客户端默认重试三次，并关闭环境代理读取。
+
+默认主任务与图片均使用 DeepSeek。通过 `GIS_AGENT_PROVIDER` 选择 DeepSeek、OpenAI 或兼容 Chat Completions 的服务。切换时同步核对模型、地址、密钥变量名、窗口与 tokenizer。其他供应商启用视觉时需要显式设置图片预算。
+
+`read_image` 支持可选 `crop=[left, top, right, bottom]`，坐标相对于本次输入图片，右下边界不包含。裁剪输出为 PNG，记录源图哈希、尺寸与区域。使用整图快照路径裁剪可保持版本一致。Pillow 已安装，依赖已进入 `environment.yml`。
 
 ## 执行与恢复
 
@@ -19,3 +23,26 @@ V7.1 已按 `docs/v7.1-langgraph.md` 迁移。根目录的 Python 入口为 `mai
 执行 `python -m pytest tests -k "not live" -v -p no:cacheprovider`。当前 12 项本地检查通过，真实 API 检查单独执行。测试覆盖 39 次模型响应、SQLite 重启续跑、复核状态恢复和中断工具的重复执行防护。
 
 真实 QGIS 目录搜索、动态工具物化、缓冲运算、几何有效性和面积检查已通过。测试目录位于 `outputs/v71_migration_checks/`。数据、既有会话和记忆记录保持原位。
+
+V7.2 的整图与裁剪像素、PNG/JPEG/WebP、无效区域、快照复用与篡改检测已通过本地检查。真实 SDK 经本地模拟 HTTP 接口检查三个供应商的请求格式，实际应用与 LangGraph 的图片读取、复核、结束流程通过。未调用收费模型 API，视觉识别效果尚未实测。
+
+## 后续设计参考
+
+- 本地 Wenyi 的 `agents/review_actions.py` 校验复核结论引用的证据是否已实际取得。`pipeline/autofix_plan.py` 保存修改前后哈希，`autofix_publish.py` 在写回前核对当前内容。这些设计可用于成果复核和安全修正。
+- learn-claude-code 的 `s16_workflow_runtime/code.py` 按调用内容生成稳定键，并从 journal 复用结果。GIS 步骤复用需要进一步绑定输入数据身份、算法版本、参数与产物依赖。
+- `s17_goal_loop/code.py` 的独立判断器只读取对话记录。GIS 复核需要向判断器提供实际产物证据；图件检查还需要图像输入能力。
+
+## 模型与图像接入调研
+
+2026-10-27 核对官方文档和本地源码：
+
+- 当前 `deepseek-flash` 支持图像输入。OpenAI 的图像输入能力按模型区分。参考：[DeepSeek](https://api-docs.deepseek.com/guides/vision/)、[OpenAI](https://developers.openai.com/api/docs/guides/images-vision)。
+- 当前适配器使用 Chat Completions。Session 保存带哈希的图片快照引用，预算和发送共用请求投影；只发送最近一批新读取的图片，模型回答后需要再次读取才能重看。附加图像消息不写回 Session，保持来源序号稳定，base64 不参与文本计数。
+- 本地 `E:\vscode\wenyi\wenyi` 有 API 供应商适配，其文本生成接口返回字符串。复用时需要保留本项目的工具调用、图像消息、usage 和结束状态。
+- 用户要求将真实任务小评测放到 V7 收尾。
+
+## V7 后续需求
+
+V7.3 至 V7.7 保持粗略需求，顺序为验证子 Agent、主动取证、修正与交付、制图子 Agent、局部回退原型。
+
+参考本地 learn-claude-code 的 `s06_subagent/code.py`：同步委派、独立消息列表、限定工具集合和简短结果返回。该实现共享进程与文件系统。项目规划中保留子任务完整记录，并通过父子标识关联；验证与制图共用执行机制，分别配置职责和工具。

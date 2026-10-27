@@ -8,6 +8,10 @@ remember_memory 的 source_indices 使用状态中的 latest_user_message、rece
 
 {% include "qgis_tools.txt" %}
 
+{% if supports_images | default(false) %}
+{% include "images.txt" %}
+{% endif %}
+
 脚本使用 QGIS 自带 Python，不会自动初始化 PyQGIS 或 Processing。
 使用 PyQGIS 时，创建 QgsApplication([], False) 并调用 initQgis()，最后调用 exitQgis()。
 使用 Processing 时，将 QgsApplication.prefixPath() 下的 python/plugins 加入 sys.path，

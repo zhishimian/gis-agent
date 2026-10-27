@@ -21,6 +21,38 @@ def configured_bool(name: str, default: bool) -> bool:
     return value in {'true', '1'}
 
 
+def configured_model() -> ModelConfig:
+    provider = os.environ.get("GIS_AGENT_PROVIDER", "deepseek")
+    if provider not in {"deepseek", "openai", "compatible"}:
+        raise ValueError("GIS_AGENT_PROVIDER 必须是 deepseek、openai 或 compatible。")
+    deepseek = provider == "deepseek"
+    model = os.environ.get("GIS_AGENT_MODEL", "deepseek-flash" if deepseek else "")
+    window = os.environ.get("GIS_AGENT_CONTEXT_WINDOW", "1048576" if deepseek else "")
+    if not model or not window:
+        raise ValueError("请设置 GIS_AGENT_MODEL 和 GIS_AGENT_CONTEXT_WINDOW。")
+    flash = deepseek and model == "deepseek-flash"
+    base_url = {
+        "deepseek": "https://api.deepseek.com",
+        "openai": "https://api.openai.com/v1",
+        "compatible": "",
+    }[provider]
+    return ModelConfig(
+        model=model,
+        base_url=os.environ.get("GIS_AGENT_BASE_URL", base_url),
+        max_tokens=int(os.environ.get("GIS_AGENT_MAX_OUTPUT_TOKENS", "8192")),
+        context_window=int(window),
+        tokenizer=os.environ.get(
+            "GIS_AGENT_TOKENIZER", "deepseek-ai/DeepSeek-V4.1-Flash-1017" if deepseek else "bytes",
+        ),
+        provider=provider,
+        output_parameter=os.environ.get(
+            "GIS_AGENT_OUTPUT_PARAMETER", "max_completion_tokens" if provider == "openai" else "max_tokens",
+        ),
+        supports_images=configured_bool("GIS_AGENT_VISION", flash),
+        image_tokens=int(os.environ.get("GIS_AGENT_IMAGE_TOKENS", "1024" if flash else "0")),
+    )
+
+
 @dataclass(frozen=True)
 class QGISConfig:
     process_launcher: Path
@@ -52,13 +84,7 @@ class AppConfig:
         if not os.environ.get('GIS_AGENT_QGIS_DIR'):
             raise ValueError('请在环境变量或 .env 中设置 GIS_AGENT_QGIS_DIR。')
         qgis_dir = configured_path('GIS_AGENT_QGIS_DIR', project, project)
-        model = ModelConfig(
-            model=os.environ.get('GIS_AGENT_MODEL', 'deepseek-flash'),
-            base_url=os.environ.get('GIS_AGENT_BASE_URL', 'https://api.deepseek.com'),
-            max_tokens=int(os.environ.get('GIS_AGENT_MAX_OUTPUT_TOKENS', '8192')),
-            context_window=int(os.environ.get('GIS_AGENT_CONTEXT_WINDOW', '1048576')),
-            tokenizer=os.environ.get('GIS_AGENT_TOKENIZER', 'deepseek-ai/DeepSeek-V4.1-Flash-1017'),
-        )
+        model = configured_model()
         context = ContextConfig(
             request_token_limit=min(
                 int(os.environ.get('GIS_AGENT_REQUEST_TOKENS', '900000')),
@@ -79,7 +105,9 @@ class AppConfig:
                 configured_path('GIS_AGENT_QGIS_PYTHON', qgis_dir / 'bin/python-qgis-ltr.bat', project),
             ),
             model=model, context=context, memory=memory,
-            api_key_env=os.environ.get('GIS_AGENT_API_KEY_ENV', 'DEEPSEEK_API_KEY'),
+            api_key_env=os.environ.get('GIS_AGENT_API_KEY_ENV', {
+                "deepseek": "DEEPSEEK_API_KEY", "openai": "OPENAI_API_KEY", "compatible": "LLM_API_KEY",
+            }[model.provider]),
             max_retries=int(os.environ.get('GIS_AGENT_MAX_RETRIES', '3')),
             trust_env=configured_bool('GIS_AGENT_TRUST_ENV', False),
         )

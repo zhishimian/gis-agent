@@ -136,6 +136,8 @@ class SessionStore:
             "role": "tool", "tool_call_id": call_id,
             "tool_name": name, "content": text,
         }
+        if name == "read_image" and isinstance(result, dict) and result.get("ok"):
+            message["images"] = [result["image"]]
         if name not in CONTROL_TOOLS and len(text) > limit:
             path = self.asset_dir / f"{uuid4().hex}.json"
             write_json(path, result)
@@ -154,7 +156,7 @@ class SessionStore:
                 names[call["id"]] = call["function"]["name"]
             item = {
                 key: message[key]
-                for key in ("role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content")
+                for key in ("role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content", "images")
                 if key in message
             }
             if message["role"] == "tool":

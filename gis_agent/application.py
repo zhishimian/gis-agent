@@ -23,6 +23,7 @@ from gis_agent.persistence.sessions import SessionStore
 from gis_agent.prompts import render_prompt
 from gis_agent.tools.builtin import builtin_tools
 from gis_agent.tools.files import file_tools
+from gis_agent.tools.images import make_image_tool
 from gis_agent.tools.memory import make_memory_tools
 from gis_agent.tools.planning import make_planning_tools
 from gis_agent.tools.qgis_python import make_qgis_python_tools
@@ -68,6 +69,8 @@ def open_conversation(config: AppConfig, session_id: str) -> Iterator[Conversati
         *make_qgis_python_tools(config.qgis.python_launcher, config.output_root / 'python_logs'),
         *make_planning_tools(plan), make_session_tool(store),
     ]
+    if config.model.supports_images:
+        tools.append(make_image_tool(store.root / f"{session_id}.assets" / "images"))
     if memory is not None:
         tools.extend(make_memory_tools(memory, store, messages, turn))
     for tool in tools:
@@ -81,7 +84,7 @@ def open_conversation(config: AppConfig, session_id: str) -> Iterator[Conversati
         agent = Agent(
             registry=registry, base_tools=tools,
             load_qgis_tool=partial(load_qgis_tool, qgis, catalog, registry), plan=plan,
-            instructions=render_prompt('system.j2', output_dir=output_dir), chat=call,
+            instructions=render_prompt('system.j2', output_dir=output_dir, supports_images=config.model.supports_images), chat=call,
             store=store, context=ContextManager(
                 store, config.context,
                 AuxiliaryCalls(call, store.record_model_call, make_token_counter(config.model), config.context.request_token_limit),
