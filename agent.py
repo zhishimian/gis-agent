@@ -5,7 +5,7 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
-
+from prompts import QGIS_TOOL_INSTRUCTIONS
 from context import ContextConfig, ContextLimit, ContextManager
 from llm import AuxiliaryCalls, AuxiliaryError, ModelReply, TokenCounter
 from memory import MemoryConfig, MemoryStore, MemoryTurn, extract_memories
@@ -200,10 +200,7 @@ def run_agent(
 remember_memory 的 source_indices 使用状态中的 latest_user_message、recent_tool_messages 或回读得到的消息序号。
 先检查字段、CRS 和单位；无法从数据判定的关键业务含义再询问用户。
 
-需要 QGIS 算法时，先用 search_qgis_tools 搜索简短英文关键词。
-搜索结果的 tool_name 是候选函数名，本次可调用项以实际提供的 schema 为准。
-需要被移出候选的算法时，按完整算法 ID 再次搜索。
-没有找到合适工具时，调整关键词。
+{QGIS_TOOL_INSTRUCTIONS}
 
 需要自定义分析或制图时，用 write_file 保存 .py 脚本，再调用 run_python_script。
 脚本使用 QGIS 自带 Python，不会自动初始化 PyQGIS 或 Processing。
