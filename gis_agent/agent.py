@@ -23,7 +23,7 @@ from gis_agent.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 PASSIVE_TOOLS = {
     'update_plan', 'finish_task', 'read_session_messages',
-    'search_memory', 'remember_memory', 'forget_memory', 'read_verification', 'define_checks',
+    'search_memory', 'remember_memory', 'forget_memory', 'read_verification', 'define_checks', 'read_delivery',
 }
 
 
@@ -58,6 +58,7 @@ class Agent:
     memory_turn: MemoryTurn | None = None
     checkpointer: BaseCheckpointSaver | None = None
     require_review: bool = True
+    completion_check: Callable[[int], dict[str, Any]] | None = None
     graph: Any = field(init=False, repr=False)
     messages: list[dict[str, Any]] = field(init=False, repr=False)
 
@@ -243,17 +244,27 @@ class Agent:
         return state
 
     def accept_finish(self, result: dict[str, Any], state: RunState) -> dict[str, Any]:
-        status = result['status']
-        if state['memory_errors'] and status in {'answer', 'completed'}:
-            return {'ok': False, 'error': '记忆操作仍有失败项，请重试对应操作或报告 blocked。'}
-        if status == 'answer' and state['execution_started']:
-            return {'ok': False, 'error': '本轮已执行操作，请报告任务状态。'}
-        if status == 'completed' and self.require_review and not state['review_started']:
-            state['review_started'] = True
-            return {**result, 'status': 'review_required', 'instruction': render_prompt('review.txt'), 'unfinished': self.plan.unfinished()}
-        if status == 'completed' and self.plan.unfinished():
-            return {'ok': False, 'error': '计划仍有未完成项，请继续处理或报告阻碍。', 'unfinished': self.plan.unfinished()}
-        state['outcome'] = result
+        status = result["status"]
+        if state["memory_errors"] and status in {"answer", "completed"}:
+            return {"ok": False, "error": "记忆操作仍有失败项，请重试对应操作或报告 blocked。"}
+        if status == "answer" and state["execution_started"]:
+            return {"ok": False, "error": "本轮已执行操作，请报告任务状态。"}
+        if status == "completed" and self.require_review:
+            if self.completion_check is not None:
+                state["review_started"] = True
+                reviewed = self.completion_check(state["turn_start"])
+                if not reviewed["ok"]:
+                    return {**reviewed, "status": "review_required"}
+                result = {**result, "delivery": reviewed["delivery"], "artifacts": reviewed["artifacts"]}
+            elif not state["review_started"]:
+                state["review_started"] = True
+                return {
+                    **result, "status": "review_required", "instruction": render_prompt("review.txt"),
+                    "unfinished": self.plan.unfinished(),
+                }
+        if status == "completed" and self.plan.unfinished():
+            return {"ok": False, "error": "计划仍有未完成项，请继续处理或报告阻碍。", "unfinished": self.plan.unfinished()}
+        state["outcome"] = result
         return result
 
     def finish(self, state: RunState) -> dict[str, Any]:

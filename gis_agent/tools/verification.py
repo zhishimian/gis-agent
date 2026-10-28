@@ -43,8 +43,11 @@ MAP_NOTE_SCHEMA = {
 CONTEXT_TOOLS = {"update_plan", "finish_task", "define_checks", "read_session_messages", "write_file", "search_qgis_tools", "read_image"}
 
 
-def registered_checks(store: SessionStore, messages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    checks = {}
+def registered_checks(
+    store: SessionStore, messages: list[dict[str, Any]],
+    initial_checks: list[dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    checks = {item["check_id"]: item for item in initial_checks or []}
     for message in messages:
         if message["role"] == "tool" and message.get("tool_name") == "define_checks":
             result = tool_result(store, message)
@@ -53,11 +56,14 @@ def registered_checks(store: SessionStore, messages: list[dict[str, Any]]) -> di
     return checks
 
 
-def make_check_plan_tool(store: SessionStore, messages: list[dict[str, Any]], allowed_sources: set[int]) -> Tool:
+def make_check_plan_tool(
+    store: SessionStore, messages: list[dict[str, Any]], allowed_sources: set[int],
+    *, initial_checks: list[dict[str, Any]] | None = None,
+) -> Tool:
     def define(checks: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(checks, list):
             return {"ok": False, "error": "checks 必须是列表。"}
-        current = registered_checks(store, messages)
+        current = registered_checks(store, messages, initial_checks)
         seen = set()
         for item in checks:
             if not isinstance(item, dict) or set(item) != set(DEFINITION_SCHEMA["properties"]):
@@ -85,7 +91,8 @@ def make_check_plan_tool(store: SessionStore, messages: list[dict[str, Any]], al
 
 
 def make_verifier_finish(
-    messages: list[dict[str, Any]], allowed_sources: set[int], output_dir: Path, *, store: SessionStore,
+    messages: list[dict[str, Any]], allowed_sources: set[int], output_dir: Path, *,
+    store: SessionStore, initial_checks: list[dict[str, Any]] | None = None,
 ) -> Tool:
     def complete(
         status: str, summary: str, checks: list[dict[str, Any]], artifacts: list[str] | None = None,
@@ -96,7 +103,7 @@ def make_verifier_finish(
             return result
         if status not in {"completed", "blocked", "needs_input"}:
             return {"ok": False, "error": "验证任务请使用 completed、blocked 或 needs_input。"}
-        plan = registered_checks(store, messages)
+        plan = registered_checks(store, messages, initial_checks)
         if not isinstance(checks, list) or (status == "completed" and not plan):
             return {"ok": False, "error": "请先登记检查方案，再提交逐项结果。"}
         rows = []

@@ -41,6 +41,8 @@ class SubtaskRunner:
 
     def run(
         self, task_id: str, goal: str, source_indices: list[int], artifacts: list[str],
+        *, checks: list[dict[str, Any]] | None = None,
+        repairs: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         directory = self.directory(task_id)
         if directory is None:
@@ -68,6 +70,8 @@ class SubtaskRunner:
                 return {"ok": False, "error": f"输入文件不存在：{path}"}
         output_dir = self.output_dir / "subtasks" / self.role / task_id
         request = {
+            "checks": checks or [],
+            "repairs": repairs or [],
             "version": 1, "role": self.role, "task_id": task_id,
             "parent_session": self.parent.session_id, "signature": self.signature,
             "goal": goal.strip(),
@@ -83,13 +87,7 @@ class SubtaskRunner:
         else:
             write_json(request_path, request)
         if result_path.exists():
-            saved = json.loads(result_path.read_text(encoding="utf-8"))
-            if hashlib.sha256(store.path.read_bytes()).hexdigest() != saved["record_hash"]:
-                return {"ok": False, "error": "已完成子任务的记录发生变化，请检查记录。"}
-            outputs = [item["path"] for item in saved["outputs"]]
-            if any(not Path(path).is_file() for path in outputs) or file_versions(outputs) != saved["outputs"]:
-                return {"ok": False, "error": "子任务产物发生变化，请重新检查。"}
-            return {**saved["result"], "reused": True}
+            return self.read_result(task_id)
         output_dir.mkdir(parents=True, exist_ok=True)
         messages = store.read_record()
         delegated = {"role": "user", "origin": "delegation", "content": json_text(request)}
@@ -123,6 +121,29 @@ class SubtaskRunner:
             "outputs": file_versions([*outcome.get("artifacts", []), *outcome.get("evidence_files", [])]), "result": result,
         })
         return result
+
+    def read_result(self, task_id: str) -> dict[str, Any]:
+        directory = self.directory(task_id)
+        if directory is None:
+            return {"ok": False, "error": "task_id 格式无效。"}
+        request_path = directory / "request.json"
+        result_path = directory / "result.json"
+        if not request_path.is_file() or not result_path.is_file():
+            return {"ok": False, "error": "子任务尚无完整结果，请恢复原调用。"}
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        if request["signature"] != self.signature or request["parent_session"] != self.parent.session_id:
+            return {"ok": False, "error": "子任务配置或父会话发生变化，请重新委派。"}
+        inputs = [item["path"] for item in request["artifacts"]]
+        if any(not Path(path).is_file() for path in inputs) or file_versions(inputs) != request["artifacts"]:
+            return {"ok": False, "error": "子任务输入发生变化，需要重新复核。"}
+        saved = json.loads(result_path.read_text(encoding="utf-8"))
+        store = SessionStore(directory, "run")
+        if not store.path.is_file() or file_digest(store.path) != saved["record_hash"]:
+            return {"ok": False, "error": "已完成子任务的记录发生变化，请检查记录。"}
+        outputs = [item["path"] for item in saved["outputs"]]
+        if any(not Path(path).is_file() for path in outputs) or file_versions(outputs) != saved["outputs"]:
+            return {"ok": False, "error": "子任务产物或证据文件发生变化，需要重新复核。"}
+        return {**saved["result"], "reused": True}
 
     def read(self, task_id: str, start: int, offset: int = 0, limit: int = 4000) -> dict[str, Any]:
         directory = self.directory(task_id)

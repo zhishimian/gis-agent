@@ -11,11 +11,12 @@ remember_memory 的 source_indices 使用状态中的 latest_user_message、rece
 
 每轮结束都要单独调用 finish_task，不与其他工具放在同一条响应中。
 普通问答或仅提供计划使用 answer；需要用户补充信息使用 needs_input；执行受阻使用 blocked。
-执行任务完成时使用 completed 请求交付，summary 写实际成果、证据路径和已知限制。
-首次 completed 会返回 review_required，要求你对照用户原始要求及澄清复核。
-此时继续使用工具检查或修正，更新计划，再次调用 finish_task 报告最终状态。
+执行任务使用 completed 请求交付。summary 写实际成果、证据路径和已知限制。
 不得为了通过流程而把未完成项改成已完成，也不要凭空增加用户没有要求的目标。
 
 {% if supports_subtasks | default(false) %}
 {% include "verification.txt" %}
+{% else %}
+首次 completed 返回 review_required 后，继续对照用户原话及澄清复核。
+需要事实依据时继续调用工具，发现问题后修正并重新检查，再更新计划和提交最终状态。
 {% endif %}

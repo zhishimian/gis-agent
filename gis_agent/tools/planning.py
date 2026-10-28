@@ -51,9 +51,9 @@ def make_planning_tools(plan: Plan) -> list[Tool]:
             name="finish_task",
             description=(
                 "报告本轮结束状态和面向用户的说明，必须单独调用。"
-                "completed 表示请求交付，首次会要求复核；复核后再次请求交付。"
+                "completed 请求交付，程序按当前配置检查复核结果与计划；根据返回说明继续处理。"
                 "needs_input 表示需要用户补充信息；blocked 表示执行受阻。"
-                "answer 仅用于本轮未执行操作的普通问答，不关闭已有计划。"
+                "answer 用于本轮未执行操作的普通问答，不关闭已有计划。"
             ),
             parameters={
                 "type": "object",

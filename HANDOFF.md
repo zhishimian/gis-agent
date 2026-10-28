@@ -2,7 +2,7 @@
 
 ## 当前实现
 
-V7.4 已按 `docs/v7.4-evidence-review.md` 应用。根目录的 Python 入口为 `main.py`，实现位于 `gis_agent/`。配置在 `config.py`，组件组装在 `application.py`，交互在 `cli.py`，提示词在 `prompts/`。
+V7.5 已按 `docs/v7.5-review-repair.md` 应用。根目录的 Python 入口为 `main.py`，实现位于 `gis_agent/`。配置在 `config.py`，组件组装在 `application.py`，交互在 `cli.py`，提示词在 `prompts/`。
 
 运行时通过环境变量或项目 `.env` 设置 `GIS_AGENT_QGIS_DIR`。两个 QGIS 启动器可分别配置。相对记录路径按项目目录解析。模型客户端默认重试三次，并关闭环境代理读取。
 
@@ -12,7 +12,9 @@ V7.4 已按 `docs/v7.4-evidence-review.md` 应用。根目录的 Python 入口�
 
 `agents/subtasks.py` 管理同步委派，`tools/verification.py` 提供 verify_task、read_verification 和子任务结果工具。application 的 AgentFactory 为父子任务创建独立可变状态，共用 GIS 提示词放在 gis.j2。子任务 completed 表示复核结束，检查是否通过由每项 PASS、FAIL、UNKNOWN 表达。
 
-验证 Agent 阅读完整要求后自选少量重难点，用 define_checks 登记判定条件、方法和覆盖范围。方案从 Session 重建，结束时逐项回报已登记 ID。证据绑定真实工具记录、完整结果资产、脚本快照与日志版本；缓存回读保护证据文件。map_notes 只保存简要地图观察和图片引用。委派配置签名已升级为 2，旧配置的委派使用新 task_id。
+验证 Agent 阅读完整要求后自选少量重难点，用 define_checks 登记判定条件、方法和覆盖范围。方案从 Session 重建，结束时逐项回报已登记 ID。证据绑定真实工具记录、完整结果资产、脚本快照与日志版本；缓存回读保护证据文件。map_notes 只保存简要地图观察和图片引用。委派配置签名已升级为 3，旧配置的委派使用新 task_id。
+
+`agents/delivery.py` 组合现有 SubtaskRunner。review_delivery 登记候选并委派重点复核，read_delivery 只读已有记录和文件。修正版自动带入未解决项，并将 repairs 说明传给子任务。completion_check 从本轮实际调用重建候选，交付前核对文件与证据；结果用 selected_risks 标明实际检查范围。候选文件位于当前输出目录的 candidates/<candidate_id>/，修正保留旧版本。
 
 ## 执行与恢复
 
@@ -36,6 +38,8 @@ V7.3 的实际入口、SDK 和父子流程通过 21 次本地固定响应检查�
 
 V7.4 的实际入口、SDK 与父子流程通过 9 次固定响应检查，检查脚本由真实 QGIS Python 执行。覆盖登记完整性、证据来源、外置结果哈希、脚本与日志版本、地图备注、缓存失效，以及执行期间脚本改写或删除。原有 12 项本地测试通过。未调用实际模型，临时数据与记录随检查结束清理。
 
+V7.5 核心检查使用 12 次固定子任务响应，真实入口与 SDK 检查使用 21 次固定响应。分析和复查脚本由 QGIS Python 执行，覆盖错误发现、修正、未解决项继承、交付拦截、版本复用、重开会话回读和普通问答。原有 12 项本地测试通过。未调用实际模型，临时数据与记录随检查结束清理。
+
 ## 后续设计参考
 
 - 本地 Wenyi 的 `agents/review_actions.py` 校验复核结论引用的证据是否已实际取得。`pipeline/autofix_plan.py` 保存修改前后哈希，`autofix_publish.py` 在写回前核对当前内容。这些设计可用于成果复核和安全修正。
@@ -52,8 +56,6 @@ V7.4 的实际入口、SDK 与父子流程通过 9 次固定响应检查，检�
 - 用户要求将真实任务小评测放到 V7 收尾。
 
 ## V7 后续需求
-
-V7.5 已细化为详细设计，代码仅在文档中，基于 V7.4 扩展。独立验证 Agent 阅读完整要求后，自选少量重难点取证，通常先选 1～2 项。修正版只自动带入未解决的重点项，按改动补查风险。review_delivery 登记候选，completion_check 在交付前核对当前文件与证据。交付记录用 selected_risks 标明实际复核范围。文档原型通过重点筛选、修正闭环、版本保护和原有 12 项本地测试，未调用实际模型。
 
 V7.6 与 V7.7 保持粗略需求，方向为制图子 Agent、局部回退原型。
 

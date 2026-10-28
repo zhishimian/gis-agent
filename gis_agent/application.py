@@ -12,6 +12,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from openai import DefaultHttpxClient, OpenAI
 
 from gis_agent.agent import Agent
+from gis_agent.agents.delivery import DeliveryReview
 from gis_agent.agents.subtasks import SubtaskRunner
 from gis_agent.config import AppConfig
 from gis_agent.core.auxiliary import AuxiliaryCalls
@@ -27,6 +28,7 @@ from gis_agent.persistence.sessions import SessionStore
 from gis_agent.persistence.json import json_text
 from gis_agent.prompts import render_prompt
 from gis_agent.tools.builtin import builtin_tools
+from gis_agent.tools.delivery import make_delivery_tools
 from gis_agent.tools.files import file_tools
 from gis_agent.tools.images import make_image_tool
 from gis_agent.tools.memory import make_memory_tools
@@ -71,6 +73,7 @@ class AgentFactory:
         saver: BaseCheckpointSaver, instructions: str, *, extra_tools: list[Tool] | None = None,
         finish_tool: Tool | None = None, memory: MemoryStore | None = None,
         turn: MemoryTurn | None = None, require_review: bool = True, log_dir: Path | None = None,
+        completion_check: Callable[[int], dict[str, Any]] | None = None,
     ) -> Agent:
         plan = Plan.from_messages(messages)
         registry = ToolRegistry()
@@ -101,6 +104,7 @@ class AgentFactory:
                 {tool.name for tool in tools},
             ),
             memory=memory, memory_turn=turn, checkpointer=saver, require_review=require_review,
+            completion_check=completion_check,
         )
 
 
@@ -125,24 +129,32 @@ def open_conversation(config: AppConfig, session_id: str) -> Iterator[Conversati
             saver: BaseCheckpointSaver, request: dict[str, Any],
         ) -> Agent:
             sources = {item["index"] for item in request["requirements"]}
+            checks = request.get("checks", [])
             return factory.create(
                 store, messages, output_dir, saver,
                 render_prompt("verifier.j2", output_dir=output_dir, supports_images=config.model.supports_images),
-                extra_tools=[make_check_plan_tool(store, messages, sources)],
-                finish_tool=make_verifier_finish(messages, sources, output_dir, store=store),
+                extra_tools=[make_check_plan_tool(store, messages, sources, initial_checks=checks)],
+                finish_tool=make_verifier_finish(
+                    messages, sources, output_dir, store=store, initial_checks=checks,
+                ),
                 require_review=False, log_dir=output_dir / "python_logs",
             )
 
         signature = hashlib.sha256(json_text({
-            "version": 2, "model": asdict(config.model),
+            "version": 3, "model": asdict(config.model),
             "prompt": render_prompt("verifier.j2", output_dir="", supports_images=config.model.supports_images),
         }).encode("utf-8")).hexdigest()
         runner = SubtaskRunner(store, messages, output_dir, create_verifier, signature)
+        delivery = DeliveryReview(runner)
         memory = MemoryStore(config.memory) if config.memory is not None else None
         turn = MemoryTurn() if memory is not None else None
         agent = factory.create(
             store, messages, output_dir, saver,
-            render_prompt("system.j2", output_dir=output_dir, supports_images=config.model.supports_images, supports_subtasks=True),
-            extra_tools=make_verification_tools(runner), memory=memory, turn=turn,
+            render_prompt(
+                "system.j2", output_dir=output_dir,
+                supports_images=config.model.supports_images, supports_subtasks=True,
+            ),
+            extra_tools=[*make_verification_tools(runner), *make_delivery_tools(delivery)],
+            completion_check=delivery.check, memory=memory, turn=turn,
         )
         yield Conversation(agent, messages, output_dir)

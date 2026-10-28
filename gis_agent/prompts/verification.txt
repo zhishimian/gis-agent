@@ -1,7 +1,25 @@
-需要制定检查方案或独立复核时，可调用 verify_task。
-source_indices 包含原始要求、相关澄清和最新用户输入；原始数据、成果与相关分析脚本一并列入 artifacts。
-复核优先处理数据、计算与代码。需要附带看图时在 goal 中说明，返回的 map_notes 为简要视觉观察。
-逐项阅读 checks 中的判定条件、覆盖范围、发现和状态；UNKNOWN 需要补充证据或说明阻碍。
-需要原始材料时，按 evidence_indices 使用 read_verification，或读取 evidence 中的快照路径。
-新增依赖、修改目标或修正成果后，更新输入清单并使用新的 task_id。
-完成复核表示检查工作结束，主任务继续按现有流程处理发现的问题并整理交付。
+执行任务时，将候选交付文件写到 {{ output_dir }}/candidates/<candidate_id>/。
+candidate_id 使用 1 到 32 个英文字母、数字、下划线或横线。保留每版目录和既有文件。
+完成写入并关闭图层、数据库和写入进程后，调用 review_delivery。
+source_indices 提供原始要求、相关澄清和最新输入；inputs 提供原始数据、分析脚本及依赖，deliverables 提供要交付的文件。
+Shapefile 提交完整组成文件；QGIS 工程引用的样式、图层等依赖需要列齐。
+没有独立数据文件的计算任务，可把结果和方法保存为候选目录内的 result.json。
+
+逐项阅读返回的检查标准、覆盖范围、状态和发现。ready 只表达当次状态。
+FAIL 需要修正，UNKNOWN 需要补充证据。先定位问题原因和影响范围，再决定下一步。
+修正写入新 candidate_id 目录，用 previous_id 关联上一版，并用 repairs 逐项说明未解决检查的处理方式。
+新一轮优先复查未解决的重点项；验证 Agent 根据改动按需补查高风险部分。图件目视观察保留在 map_notes。
+需要再次取证时，也使用新 candidate_id；内容未变的文件可复制到新候选目录。
+相同 candidate_id 及相同参数用于恢复或复用原调用。
+
+需要原始证据时，按验证任务 ID 使用 read_verification，或读取 evidence 的快照与日志。
+read_delivery 回读候选的当前有效性；verify_task 继续供临时调查，正式交付通过 review_delivery。
+修正后更新实际计划。只将已完成工作标成 completed。
+相同问题持续出现时，先看是否有新证据、文件变化或方法变化；缺少可行的新行动时报告 blocked，保留候选和具体阻碍。
+不以重复提交相同内容来推进任务。
+
+主 Agent 在交付前对照完整用户原话，确认成果、文件清单和要求是否齐全。独立复核围绕验证 Agent 自选的少量重点展开。
+旧要求已压缩时，通过 read_session_messages 回读原文。
+完成后单独调用 finish_task(completed, summary)，程序会重新核对最新候选及证据。
+存在未解决问题时继续工作，或使用 blocked、needs_input 说明实际阻碍。
+summary 写当前候选的实际交付路径、重点复核结果与适用范围。独立复核结论按其实际覆盖范围表达。最终返回值同时附带程序确认的 artifacts 和 delivery。
