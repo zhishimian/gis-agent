@@ -2,7 +2,7 @@
 
 ## 当前实现
 
-V7.3 已按 `docs/v7.3-verifier-agent.md` 应用。根目录的 Python 入口为 `main.py`，实现位于 `gis_agent/`。配置在 `config.py`，组件组装在 `application.py`，交互在 `cli.py`，提示词在 `prompts/`。
+V7.4 已按 `docs/v7.4-evidence-review.md` 应用。根目录的 Python 入口为 `main.py`，实现位于 `gis_agent/`。配置在 `config.py`，组件组装在 `application.py`，交互在 `cli.py`，提示词在 `prompts/`。
 
 运行时通过环境变量或项目 `.env` 设置 `GIS_AGENT_QGIS_DIR`。两个 QGIS 启动器可分别配置。相对记录路径按项目目录解析。模型客户端默认重试三次，并关闭环境代理读取。
 
@@ -11,6 +11,8 @@ V7.3 已按 `docs/v7.3-verifier-agent.md` 应用。根目录的 Python 入口为
 `read_image` 支持可选 `crop=[left, top, right, bottom]`，坐标相对于本次输入图片，右下边界不包含。裁剪输出为 PNG，记录源图哈希、尺寸与区域。使用整图快照路径裁剪可保持版本一致。Pillow 已安装，依赖已进入 `environment.yml`。
 
 `agents/subtasks.py` 管理同步委派，`tools/verification.py` 提供 verify_task、read_verification 和子任务结果工具。application 的 AgentFactory 为父子任务创建独立可变状态，共用 GIS 提示词放在 gis.j2。子任务 completed 表示复核结束，检查是否通过由每项 PASS、FAIL、UNKNOWN 表达。
+
+验证 Agent 阅读完整要求后自选少量重难点，用 define_checks 登记判定条件、方法和覆盖范围。方案从 Session 重建，结束时逐项回报已登记 ID。证据绑定真实工具记录、完整结果资产、脚本快照与日志版本；缓存回读保护证据文件。map_notes 只保存简要地图观察和图片引用。委派配置签名已升级为 2，旧配置的委派使用新 task_id。
 
 ## 执行与恢复
 
@@ -32,6 +34,8 @@ V7.2 的整图与裁剪像素、PNG/JPEG/WebP、无效区域、快照复用与�
 
 V7.3 的实际入口、SDK 和父子流程通过 21 次本地固定响应检查，覆盖状态隔离、证据与产物路径校验、结果复用、恢复、输入变化和截断处理。原有 12 项本地测试通过。全程未调用实际模型，GIS 复核质量尚未实测。
 
+V7.4 的实际入口、SDK 与父子流程通过 9 次固定响应检查，检查脚本由真实 QGIS Python 执行。覆盖登记完整性、证据来源、外置结果哈希、脚本与日志版本、地图备注、缓存失效，以及执行期间脚本改写或删除。原有 12 项本地测试通过。未调用实际模型，临时数据与记录随检查结束清理。
+
 ## 后续设计参考
 
 - 本地 Wenyi 的 `agents/review_actions.py` 校验复核结论引用的证据是否已实际取得。`pipeline/autofix_plan.py` 保存修改前后哈希，`autofix_publish.py` 在写回前核对当前内容。这些设计可用于成果复核和安全修正。
@@ -49,6 +53,8 @@ V7.3 的实际入口、SDK 和父子流程通过 21 次本地固定响应检查�
 
 ## V7 后续需求
 
-V7.4 至 V7.7 保持粗略需求，顺序为主动取证、修正与交付、制图子 Agent、局部回退原型。
+V7.5 已细化为详细设计，代码仅在文档中，基于 V7.4 扩展。独立验证 Agent 阅读完整要求后，自选少量重难点取证，通常先选 1～2 项。修正版只自动带入未解决的重点项，按改动补查风险。review_delivery 登记候选，completion_check 在交付前核对当前文件与证据。交付记录用 selected_risks 标明实际复核范围。文档原型通过重点筛选、修正闭环、版本保护和原有 12 项本地测试，未调用实际模型。
+
+V7.6 与 V7.7 保持粗略需求，方向为制图子 Agent、局部回退原型。
 
 参考本地 learn-claude-code 的 `s06_subagent/code.py`：同步委派、独立消息列表、限定工具集合和简短结果返回。该实现共享进程与文件系统。项目规划中保留子任务完整记录，并通过父子标识关联；验证与制图共用执行机制，分别配置职责和工具。

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from gis_agent.persistence.evidence import file_digest
 from gis_agent.tools.base import Tool
 
 
@@ -21,6 +22,9 @@ def run_python_script(
 
     log_dir = (log_dir / uuid4().hex).resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = log_dir / "script.py"
+    snapshot.write_bytes(script.read_bytes())
+    script_hash = file_digest(snapshot)
     stdout_path = log_dir / "stdout.txt"
     stderr_path = log_dir / "stderr.txt"
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
@@ -37,13 +41,16 @@ def run_python_script(
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
 
+    changed = not script.is_file() or file_digest(script) != script_hash
     return {
-        "ok": result.returncode == 0,
+        "ok": result.returncode == 0 and not changed,
         "returncode": result.returncode,
         "stdout": stdout_path.read_text(encoding="utf-8", errors="replace")[-4000:],
         "stderr": stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:],
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
+        "script_snapshot": str(snapshot), "script_sha256": script_hash, "script_changed": changed,
+        "stdout_sha256": file_digest(stdout_path), "stderr_sha256": file_digest(stderr_path),
     }
 
 

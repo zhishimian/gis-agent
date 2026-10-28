@@ -1,8 +1,7 @@
-需要独立制定检查方案或复核已有成果时，可调用 verify_task。
-传入相关用户原话的 source_indices，包含 latest_user_message 和当前任务有关的原始要求及澄清。
-goal 写清本次复核目标，artifacts 使用实际发现的文件路径；Shapefile 一并提供各组成文件。
-task_id 为本次明确的委派标识。相同标识只用于相同输入；修正成果或改变目标后换新标识。
-verify_task 同步返回逐项检查和子会话位置。completed 表示复核结束，逐项阅读 PASS、FAIL、UNKNOWN。
-子任务中出现 stale 或阻碍时，先处理原因，再决定下一步。
-需要原始依据时，用 read_verification 按 evidence_indices 回读子会话工具结果。
-结合发现的问题继续处理当前任务，并按现有 finish_task 流程整理交付。
+需要制定检查方案或独立复核时，可调用 verify_task。
+source_indices 包含原始要求、相关澄清和最新用户输入；原始数据、成果与相关分析脚本一并列入 artifacts。
+复核优先处理数据、计算与代码。需要附带看图时在 goal 中说明，返回的 map_notes 为简要视觉观察。
+逐项阅读 checks 中的判定条件、覆盖范围、发现和状态；UNKNOWN 需要补充证据或说明阻碍。
+需要原始材料时，按 evidence_indices 使用 read_verification，或读取 evidence 中的快照路径。
+新增依赖、修改目标或修正成果后，更新输入清单并使用新的 task_id。
+完成复核表示检查工作结束，主任务继续按现有流程处理发现的问题并整理交付。

@@ -35,7 +35,7 @@ from gis_agent.tools.qgis_python import make_qgis_python_tools
 from gis_agent.tools.registry import ToolRegistry
 from gis_agent.tools.session import make_session_tool
 from gis_agent.tools.base import Tool
-from gis_agent.tools.verification import make_verification_tools, make_verifier_finish
+from gis_agent.tools.verification import make_check_plan_tool, make_verification_tools, make_verifier_finish
 
 
 @dataclass
@@ -124,15 +124,17 @@ def open_conversation(config: AppConfig, session_id: str) -> Iterator[Conversati
             store: SessionStore, messages: list[dict[str, Any]], output_dir: Path,
             saver: BaseCheckpointSaver, request: dict[str, Any],
         ) -> Agent:
+            sources = {item["index"] for item in request["requirements"]}
             return factory.create(
                 store, messages, output_dir, saver,
                 render_prompt("verifier.j2", output_dir=output_dir, supports_images=config.model.supports_images),
-                finish_tool=make_verifier_finish(messages, {item["index"] for item in request["requirements"]}, output_dir),
+                extra_tools=[make_check_plan_tool(store, messages, sources)],
+                finish_tool=make_verifier_finish(messages, sources, output_dir, store=store),
                 require_review=False, log_dir=output_dir / "python_logs",
             )
 
         signature = hashlib.sha256(json_text({
-            "version": 1, "model": asdict(config.model),
+            "version": 2, "model": asdict(config.model),
             "prompt": render_prompt("verifier.j2", output_dir="", supports_images=config.model.supports_images),
         }).encode("utf-8")).hexdigest()
         runner = SubtaskRunner(store, messages, output_dir, create_verifier, signature)

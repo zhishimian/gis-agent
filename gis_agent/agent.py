@@ -23,7 +23,7 @@ from gis_agent.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 PASSIVE_TOOLS = {
     'update_plan', 'finish_task', 'read_session_messages',
-    'search_memory', 'remember_memory', 'forget_memory', 'read_verification',
+    'search_memory', 'remember_memory', 'forget_memory', 'read_verification', 'define_checks',
 }
 
 

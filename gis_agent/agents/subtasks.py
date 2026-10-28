@@ -10,6 +10,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from gis_agent.agent import Agent
+from gis_agent.persistence.evidence import file_digest
 from gis_agent.persistence.json import json_text, write_json
 from gis_agent.persistence.sessions import SessionStore
 
@@ -18,14 +19,10 @@ CreateAgent = Callable[[SessionStore, list[dict[str, Any]], Path, BaseCheckpoint
 
 
 def file_versions(paths: list[str]) -> list[dict[str, str]]:
-    versions = []
-    for path in sorted({Path(value).expanduser().resolve() for value in paths}):
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                digest.update(chunk)
-        versions.append({"path": str(path), "sha256": digest.hexdigest()})
-    return versions
+    return [
+        {"path": str(path), "sha256": file_digest(path)}
+        for path in sorted({Path(value).expanduser().resolve() for value in paths})
+    ]
 
 
 @dataclass
@@ -123,7 +120,7 @@ class SubtaskRunner:
             result.update(ok=False, status="blocked", summary="检查期间输入发生变化，当前结论需要重新核对。")
         write_json(result_path, {
             "record_hash": hashlib.sha256(store.path.read_bytes()).hexdigest(),
-            "outputs": file_versions(outcome.get("artifacts", [])), "result": result,
+            "outputs": file_versions([*outcome.get("artifacts", []), *outcome.get("evidence_files", [])]), "result": result,
         })
         return result
 

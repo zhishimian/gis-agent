@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -144,6 +145,7 @@ class SessionStore:
             message["asset"] = {
                 "version": 1, "format": "json",
                 "path": path.relative_to(self.root).as_posix(), "characters": len(text),
+                "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
             }
             message["content"] = result_view(result, limit, {"path": str(path)})
         return message
