@@ -1,5 +1,17 @@
 {% include "gis.j2" %}
 
+{% if supports_cartography | default(false) %}
+用户要求制图时，先写 brief.json，包含读图问题、受众、数据路径/图层/专题字段/单位、
+输出尺寸和格式、必需标注及约束。把简报和所有实际依赖登记到 cartograph_task，goal明确简报路径。
+制图子任务返回后，read_cartography 可回读已有结果。需要看图时用 read_image。
+制图结果要整理到本会话的 candidates/candidate_id/ 后再调用 review_delivery。
+可写普通QGIS脚本，从 {{ cartography_runtime | default('') }} 导入 stage_candidate：
+stage_candidate(子任务manifest路径, 新候选目录)。目标目录需要尚不存在；函数重开工程并重新导出、登记清单。
+随后读取新候选的preview，review_delivery登记清单中全部outputs及manifest，inputs登记清单中的冻结依赖。
+修正版使用新的task_id和candidate_id，previous_id关联旧版。repairs只填写现有未解决check_id；
+纯视觉备注通过新简报visual_feedback及goal传递。重要视觉问题尚未解决时继续修正或报告阻碍。
+{% endif %}
+
 需要历史偏好或经验时可用 search_memory。用户明确要求记住、纠正或删除时，调用对应记忆工具并检查结果。
 记忆是带来源与适用范围的背景，当前要求和当前检查结果优先；临时要求不转成长期默认。
 remember_memory 的 source_indices 使用状态中的 latest_user_message、recent_tool_messages 或回读得到的消息序号。

@@ -2,6 +2,12 @@
 
 ## 当前实现
 
+V7.6 制图核心已接入。application 组装独立 cartographer；主任务提供 cartograph_task 和 read_cartography，子任务按需读取十条规则。字体经 QGISConfig.font_files 或 GIS_AGENT_FONT_FILES 配置，Windows默认加载本机雅黑和Arial。依赖仍由QGIS自带Python承载。
+
+cartography_runtime.py 独立运行，负责字体、布局、导出和候选整理。两个示例接收设计JSON，run_python_script现可显式传arguments。普通PNG使用布局渲染到QImage后保存，本机检查没有再出现PNG驱动更新警告。PNG＋QGZ为基础交付，QML/QPT随输出保存。
+
+制图结束要求当前manifest、全部outputs、实际脚本/日志版本，以及渲染后crop=None的整图读取。输入、知识素材、例程和字体保留指纹。stage_candidate只接收新目录，复制后重开工程并重新导出、生成清单；父任务随后读取新预览并沿用V7.5复核。纯视觉意见经新brief.visual_feedback传递。
+
 V7.5 已按 `docs/v7.5-review-repair.md` 应用。根目录的 Python 入口为 `main.py`，实现位于 `gis_agent/`。配置在 `config.py`，组件组装在 `application.py`，交互在 `cli.py`，提示词在 `prompts/`。
 
 运行时通过环境变量或项目 `.env` 设置 `GIS_AGENT_QGIS_DIR`。两个 QGIS 启动器可分别配置。相对记录路径按项目目录解析。模型客户端默认重试三次，并关闭环境代理读取。
@@ -40,6 +46,8 @@ V7.4 的实际入口、SDK 与父子流程通过 9 次固定响应检查，检�
 
 V7.5 核心检查使用 12 次固定子任务响应，真实入口与 SDK 检查使用 21 次固定响应。分析和复查脚本由 QGIS Python 执行，覆盖错误发现、修正、未解决项继承、交付拦截、版本复用、重开会话回读和普通问答。原有 12 项本地测试通过。未调用实际模型，临时数据与记录随检查结束清理。
 
+V7.6 通过语法、素材和提示词检查，真实QGIS分级设色/NoData、设施图及候选重开导出可运行，原有12项本地检查通过。制图结束检查确认仅裁剪读取会失败，读取当前整图后成功。主入口已组装新工具，未发起模型调用。记录位于 outputs/v76_local_20261028_191255/。本轮未新增测试文件，真实模型闭环、视觉质量、双时相任务与对照实验待后续验收。
+
 ## 后续设计参考
 
 - 本地 Wenyi 的 `agents/review_actions.py` 校验复核结论引用的证据是否已实际取得。`pipeline/autofix_plan.py` 保存修改前后哈希，`autofix_publish.py` 在写回前核对当前内容。这些设计可用于成果复核和安全修正。
@@ -57,6 +65,6 @@ V7.5 核心检查使用 12 次固定子任务响应，真实入口与 SDK 检查
 
 ## V7 后续需求
 
-V7.6 与 V7.7 保持粗略需求，方向为制图子 Agent、局部回退原型。
+V7.6 已按 `docs/v7.6-cartography-agent.md` 落地核心实现。真实模型闭环和六条件先导实验按用户要求暂缓。V7.7 保持局部回退原型的粗略需求。纯视觉观察继续使用 map_notes，现有 ready 仅覆盖已登记重点检查。
 
 参考本地 learn-claude-code 的 `s06_subagent/code.py`：同步委派、独立消息列表、限定工具集合和简短结果返回。该实现共享进程与文件系统。项目规划中保留子任务完整记录，并通过父子标识关联；验证与制图共用执行机制，分别配置职责和工具。

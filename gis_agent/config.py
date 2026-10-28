@@ -21,6 +21,16 @@ def configured_bool(name: str, default: bool) -> bool:
     return value in {'true', '1'}
 
 
+def configured_fonts(project: Path) -> tuple[Path, ...]:
+    value = os.environ.get('GIS_AGENT_FONT_FILES')
+    if value is None:
+        directory = Path(os.environ.get('WINDIR', 'C:/Windows')) / 'Fonts'
+        paths = [directory / name for name in ('msyh.ttc', 'arial.ttf')] if os.name == 'nt' else []
+    else:
+        paths = [Path(item.strip()).expanduser() for item in value.split(';') if item.strip()]
+    return tuple((path if path.is_absolute() else project / path).resolve() for path in paths)
+
+
 def configured_model() -> ModelConfig:
     provider = os.environ.get("GIS_AGENT_PROVIDER", "deepseek")
     if provider not in {"deepseek", "openai", "compatible"}:
@@ -57,6 +67,7 @@ def configured_model() -> ModelConfig:
 class QGISConfig:
     process_launcher: Path
     python_launcher: Path
+    font_files: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         for path in (self.process_launcher, self.python_launcher):
@@ -103,6 +114,7 @@ class AppConfig:
             qgis=QGISConfig(
                 configured_path('GIS_AGENT_QGIS_PROCESS', qgis_dir / 'bin/qgis_process-qgis-ltr.bat', project),
                 configured_path('GIS_AGENT_QGIS_PYTHON', qgis_dir / 'bin/python-qgis-ltr.bat', project),
+                configured_fonts(project),
             ),
             model=model, context=context, memory=memory,
             api_key_env=os.environ.get('GIS_AGENT_API_KEY_ENV', {

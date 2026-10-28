@@ -90,11 +90,14 @@ def make_qgis_python_tools(launcher: Path, log_dir: Path) -> list[Tool]:
                 "需要 PyQGIS 或 Processing 时，由脚本显式初始化。"
                 "工作目录为脚本所在目录，不共享上次执行的变量。"
                 "等待脚本退出，返回退出码、日志尾部和完整日志路径。"
-                "先用 write_file 保存脚本；修改脚本后可以重新执行。"
+                "先用 write_file 保存脚本；修改脚本后可以重新执行。arguments 可传入脚本参数。"
             ),
             parameters={
                 "type": "object",
-                "properties": {"script_path": {"type": "string"}},
+                "properties": {
+                    "script_path": {"type": "string"},
+                    "arguments": {"type": "array", "items": {"type": "string"}},
+                },
                 "required": ["script_path"],
                 "additionalProperties": False,
             },

@@ -24,10 +24,12 @@ from gis_agent.integrations.llm import chat, make_token_counter
 from gis_agent.integrations.qgis.adapter import load_qgis_tool
 from gis_agent.integrations.qgis.catalog import load_catalog, make_search_tool
 from gis_agent.integrations.qgis.client import QGISClient
+from gis_agent.persistence.evidence import file_digest
 from gis_agent.persistence.sessions import SessionStore
 from gis_agent.persistence.json import json_text
 from gis_agent.prompts import render_prompt
 from gis_agent.tools.builtin import builtin_tools
+from gis_agent.tools.cartography import make_cartography_finish, make_cartography_rule_tool, make_cartography_tools
 from gis_agent.tools.delivery import make_delivery_tools
 from gis_agent.tools.files import file_tools
 from gis_agent.tools.images import make_image_tool
@@ -146,6 +148,34 @@ def open_conversation(config: AppConfig, session_id: str) -> Iterator[Conversati
         }).encode("utf-8")).hexdigest()
         runner = SubtaskRunner(store, messages, output_dir, create_verifier, signature)
         delivery = DeliveryReview(runner)
+        assets = Path(__file__).resolve().parent / "assets" / "cartography"
+        runtime = Path(__file__).resolve().parent / "integrations" / "qgis" / "cartography_runtime.py"
+        resources = [runtime, *sorted(assets.rglob("*.json")), *sorted(assets.rglob("*.py"))]
+
+        def cartography_prompt(output_dir: Path | str) -> str:
+            return render_prompt(
+                "cartographer.j2", output_dir=output_dir, supports_images=config.model.supports_images,
+                assets=assets, runtime_dir=runtime.parent, font_files=[str(path) for path in config.qgis.font_files],
+            )
+
+        def create_cartographer(
+            store: SessionStore, messages: list[dict[str, Any]], output_dir: Path,
+            saver: BaseCheckpointSaver, request: dict[str, Any],
+        ) -> Agent:
+            return factory.create(
+                store, messages, output_dir, saver, cartography_prompt(output_dir),
+                extra_tools=[make_cartography_rule_tool(assets / "rules.json")],
+                finish_tool=make_cartography_finish(store, messages, output_dir, request),
+                require_review=False, log_dir=output_dir / "python_logs",
+            )
+
+        cartography_signature = hashlib.sha256(json_text({
+            "version": 1, "model": asdict(config.model), "prompt": cartography_prompt(""),
+            "resources": [{"path": str(path), "sha256": file_digest(path)} for path in resources],
+            "fonts": [{"path": str(path), "sha256": file_digest(path) if path.is_file() else None}
+                      for path in config.qgis.font_files],
+        }).encode("utf-8")).hexdigest()
+        cartographer = SubtaskRunner(store, messages, output_dir, create_cartographer, cartography_signature, "cartographer")
         memory = MemoryStore(config.memory) if config.memory is not None else None
         turn = MemoryTurn() if memory is not None else None
         agent = factory.create(
@@ -153,8 +183,12 @@ def open_conversation(config: AppConfig, session_id: str) -> Iterator[Conversati
             render_prompt(
                 "system.j2", output_dir=output_dir,
                 supports_images=config.model.supports_images, supports_subtasks=True,
+                supports_cartography=True, cartography_runtime=runtime.parent,
             ),
-            extra_tools=[*make_verification_tools(runner), *make_delivery_tools(delivery)],
+            extra_tools=[
+                *make_verification_tools(runner), *make_delivery_tools(delivery),
+                *make_cartography_tools(cartographer, resources, config.qgis.font_files, config.model.supports_images),
+            ],
             completion_check=delivery.check, memory=memory, turn=turn,
         )
         yield Conversation(agent, messages, output_dir)

@@ -1,0 +1,41 @@
+[
+  {
+    "id": "nps-facilities",
+    "rules": [
+      "R04",
+      "R05",
+      "R06"
+    ],
+    "task": "寻找设施并理解到达路径",
+    "observation": "官方图面以淡道路和建筑作背景，设施以黑白符号突出。官方说明按游客需要安排道路、边界和地名优先级。",
+    "decision": "设施覆盖任务保留目标设施和必要地名，删减与任务无关的服务类别。",
+    "limits": "具体尺寸和色值需根据实际输出验证。徒步任务对路线和地形的层级要求不同。",
+    "source": "https://www.nps.gov/maps/web/tools/park-tiles/index.html"
+  },
+  {
+    "id": "dynamic-world-comparison",
+    "rules": [
+      "R03",
+      "R07",
+      "R10"
+    ],
+    "task": "比较多个地区和地表覆盖产品",
+    "observation": "多产品按矩阵排列，地类颜色保持固定，图例集中解释。",
+    "decision": "先核对类目映射、日期和范围，再保留比较所需的多面板结构。",
+    "limits": "面板多有任务依据；不同分辨率和类目未对齐时不能直接比较。",
+    "source": "https://www.nature.com/articles/s41597-022-01307-4/figures/8"
+  },
+  {
+    "id": "contour-hierarchy",
+    "rules": [
+      "R03",
+      "R04",
+      "R06"
+    ],
+    "task": "读取连续地理场的大尺度结构及数值",
+    "observation": "官方Cartopy示例使用弱海岸线、填色、黑色等值线和内嵌标签。",
+    "decision": "弱化位置背景，使用少量关键等值线标签支持精读。",
+    "limits": "应按单位、场值和最终尺寸决定标签密度；示例本身无法验证原始数据正确性。",
+    "source": "https://cartopy.readthedocs.io/stable/gallery/scalar_data/contour_labels.html"
+  }
+]
