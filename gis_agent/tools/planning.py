@@ -22,7 +22,7 @@ def make_planning_tools(plan: Plan) -> list[Tool]:
             description=(
                 "设置或更新当前任务的完整计划。goal 记录用户目标，steps 整表替换。"
                 "继续任务时保留已完成项，新任务应更换目标和清单。"
-                "多步骤任务先列计划，最后包含按用户要求复核并整理交付。"
+                "简单单项操作直接执行；多个独立目标或较长分析链再列计划，包含复核与交付。"
             ),
             parameters={
                 "type": "object",

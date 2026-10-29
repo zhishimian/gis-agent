@@ -4,6 +4,7 @@ import json
 import math
 import os
 from collections.abc import Callable
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ from dotenv import dotenv_values
 from langgraph.checkpoint.sqlite import SqliteSaver
 from openai import DefaultHttpxClient, OpenAI
 
+from gis_agent import application
+from gis_agent.config import AppConfig
 from gis_agent.agent import Agent
 from gis_agent.prompts import render_prompt
 from gis_agent.tools.session import make_session_tool
@@ -32,6 +35,7 @@ from gis_agent.tools.memory import make_memory_tools
 from gis_agent.tools.planning import make_planning_tools
 from gis_agent.tools.qgis_python import inspect_data, make_qgis_python_tools, run_python_script
 from gis_agent.tools.registry import ToolRegistry
+from gis_agent.tools.verification import available_evidence, make_verifier_finish
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -103,6 +107,130 @@ def test_v4_files_data_and_script(tmp_path: Path, qgis_dir: Path, points: Path) 
     assert data["data"]["feature_count"] == 2
     assert data["data"]["crs"] == "EPSG:3857"
     assert data["data"]["geometry_type"] == "Point"
+
+
+def test_qgis_creates_output_parent(tmp_path: Path, qgis_dir: Path, points: Path) -> None:
+    from gis_agent.integrations.qgis.adapter import execute_algorithm
+
+    client = QGISClient(qgis_dir / "bin" / "qgis_process-qgis-ltr.bat")
+    definitions = client.query("help", "native:buffer")["parameters"]
+    output = tmp_path / "new" / "candidate" / "result.gpkg"
+    arguments = {"INPUT": str(points), "DISTANCE": 500, "SEGMENTS": 16, "OUTPUT": str(output)}
+    assert not output.parent.exists()
+    result = execute_algorithm(client, "native:buffer", definitions, **arguments)
+    assert result["ok"] and output.is_file(), result
+    original = output.read_bytes()
+    refused = execute_algorithm(client, "native:buffer", definitions, **arguments)
+    assert not refused["ok"] and output.read_bytes() == original
+    script = tmp_path / "measure.py"
+    script.write_text(
+        "import sys\nfrom qgis.core import QgsApplication, QgsVectorLayer, QgsProject\n"
+        "def main():\n"
+        "    layer = QgsVectorLayer(sys.argv[1], 'result', 'ogr')\n"
+        "    assert layer.isValid() and layer.featureCount() == 2\n"
+        "    assert layer.crs().authid() == 'EPSG:3857'\n"
+        "    assert all(f.geometry().isGeosValid() for f in layer.getFeatures())\n"
+        "    print('检查通过')\n"
+        "app = QgsApplication([], False)\napp.initQgis()\nmain()\n"
+        "QgsProject.instance().clear()\napp.exitQgis()\n",
+        encoding="utf-8",
+    )
+    measured = run_python_script(qgis_dir / "bin" / "python-qgis-ltr.bat", tmp_path / "logs", str(script), [str(output)])
+    assert measured["ok"] and measured["returncode"] == 0, measured
+
+
+def test_verifier_receives_evidence_catalog_without_plan(tmp_path: Path, count_tokens) -> None:
+    store = SessionStore(tmp_path, "verifier")
+    messages = [{"role": "user", "origin": "delegation", "content": "核验实际读取。"}]
+    data = tmp_path / "measurement.txt"
+    data.write_text("实际测量通过。", encoding="utf-8")
+    definitions = [{
+        "check_id": "measure", "requirement": "核验实际读取", "source_indices": [0],
+        "criterion": "实际测量满足要求", "method": "读取测量结果", "coverage": "本次结果",
+    }]
+    finish = make_verifier_finish(messages, {0}, tmp_path / "output", store=store, initial_checks=definitions)
+    tools = [next(tool for tool in file_tools if tool.name == "read_file"), finish]
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register(tool)
+    requests = []
+
+    def fixed(view, schemas):
+        requests.append(view)
+        if len(requests) == 1:
+            return reply("measurement", "read_file", {"path": str(data)})
+        business = json.loads(view[1]["content"].split("：", 1)[1])
+        evidence = business["available_evidence"][0]
+        assert evidence["tool_name"] == "read_file" and evidence["label"] == data.name
+        return reply("complete", "finish_task", {
+            "status": "completed", "summary": "重点通过。",
+            "checks": [{"check_id": "measure", "status": "PASS", "finding": "实际测量通过。", "evidence_ids": [evidence["evidence_id"]]}],
+        })
+
+    agent = Agent(
+        registry, tools, unexpected_model_call, Plan(), "按实际证据核验。", fixed,
+        store, make_context(store, ContextConfig(), {tool.name for tool in tools}, count_tokens),
+        require_review=False, evidence_catalog=partial(available_evidence, messages),
+    )
+    result = agent.run(messages)
+    assert result["ok"] and result["status"] == "completed"
+    assert result["checks"][0]["evidence_indices"] == [2]
+    assert len(requests) == 2 and not agent.plan.steps
+
+
+def test_parent_verifier_round_trip(tmp_path: Path, qgis_dir: Path, count_tokens, monkeypatch) -> None:
+    config = AppConfig.from_env(ROOT)
+    config = replace(
+        config, model=replace(config.model, supports_images=False), memory=None,
+        api_key_env="GIS_AGENT_OFFLINE_TEST_KEY", session_root=tmp_path / "sessions", output_root=tmp_path / "outputs",
+    )
+    monkeypatch.setenv(config.api_key_env, "offline-test")
+    candidate = config.output_root / "parent" / "candidates" / "first" / "result.txt"
+    definitions = [{
+        "check_id": "content", "requirement": "保存实际文本", "source_indices": [0],
+        "criterion": "文本内容为结果", "method": "读取实际文件", "coverage": "完整文件",
+    }]
+    counts = {"parent": 0, "verifier": 0}
+
+    def fixed(client, model, view, schemas):
+        finish_schema = next(item["function"]["parameters"] for item in schemas if item["function"]["name"] == "finish_task")
+        role = "verifier" if "checks" in finish_schema["properties"] else "parent"
+        counts[role] += 1
+        if role == "verifier":
+            if counts[role] == 1:
+                return reply("define", "define_checks", {"checks": definitions})
+            if counts[role] == 2:
+                return reply("read-result", "read_file", {"path": str(candidate)})
+            business = json.loads(view[1]["content"].split("：", 1)[1])
+            evidence_id = next(item["evidence_id"] for item in business["available_evidence"] if item["ok"])
+            return reply("verified", "finish_task", {
+                "status": "completed", "summary": "内容符合要求。",
+                "checks": [{"check_id": "content", "status": "PASS", "finding": "读取内容为结果。", "evidence_ids": [evidence_id]}],
+            })
+        if counts[role] == 1:
+            return reply("write-result", "write_file", {"path": str(candidate), "content": "结果"})
+        if counts[role] == 2:
+            return reply("review", "review_delivery", {
+                "candidate_id": "first", "goal": "写入结果文本，核验实际内容。", "source_indices": [0],
+                "inputs": [], "deliverables": [str(candidate)],
+            })
+        reviewed = next(json.loads(item["content"]) for item in view if item.get("tool_call_id") == "review")
+        assert reviewed["ready"] and "definitions" not in reviewed
+        return reply("finish", "finish_task", {"status": "completed", "summary": "文件已保存并通过重点复核。"})
+
+    monkeypatch.setattr(application, "chat", fixed)
+    monkeypatch.setattr(application, "make_token_counter", lambda _: count_tokens)
+    with application.open_conversation(config, "parent") as conversation:
+        result = conversation.send("保存内容为结果的文本文件，并核验实际内容。")
+        assert result["ok"] and result["delivery"]["checks"][0]["evidence_indices"] == [4]
+        assert not conversation.agent.plan.steps
+    with application.open_conversation(config, "parent") as conversation:
+        assert not conversation.pending
+        cached = conversation.agent.registry.execute("read_delivery", {"candidate_id": "first"})
+        assert cached["ready"]
+        candidate.write_text("发生变化", encoding="utf-8")
+        assert not conversation.agent.completion_check(0)["ok"]
+    assert counts == {"parent": 3, "verifier": 3}
 
 
 def test_v5_plan_review_and_session_restore(tmp_path: Path, count_tokens) -> None:

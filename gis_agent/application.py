@@ -39,7 +39,7 @@ from gis_agent.tools.qgis_python import make_qgis_python_tools
 from gis_agent.tools.registry import ToolRegistry
 from gis_agent.tools.session import make_session_tool
 from gis_agent.tools.base import Tool
-from gis_agent.tools.verification import make_check_plan_tool, make_verification_tools, make_verifier_finish
+from gis_agent.tools.verification import available_evidence, make_check_plan_tool, make_verification_tools, make_verifier_finish
 
 
 @dataclass
@@ -76,6 +76,7 @@ class AgentFactory:
         finish_tool: Tool | None = None, memory: MemoryStore | None = None,
         turn: MemoryTurn | None = None, require_review: bool = True, log_dir: Path | None = None,
         completion_check: Callable[[int], dict[str, Any]] | None = None,
+        evidence_catalog: Callable[[], list[dict[str, Any]]] | None = None,
     ) -> Agent:
         plan = Plan.from_messages(messages)
         registry = ToolRegistry()
@@ -107,6 +108,7 @@ class AgentFactory:
             ),
             memory=memory, memory_turn=turn, checkpointer=saver, require_review=require_review,
             completion_check=completion_check,
+            evidence_catalog=evidence_catalog,
         )
 
 
@@ -140,10 +142,11 @@ def open_conversation(config: AppConfig, session_id: str) -> Iterator[Conversati
                     messages, sources, output_dir, store=store, initial_checks=checks,
                 ),
                 require_review=False, log_dir=output_dir / "python_logs",
+                evidence_catalog=partial(available_evidence, messages),
             )
 
         signature = hashlib.sha256(json_text({
-            "version": 3, "model": asdict(config.model),
+            "version": 4, "model": asdict(config.model),
             "prompt": render_prompt("verifier.j2", output_dir="", supports_images=config.model.supports_images),
         }).encode("utf-8")).hexdigest()
         runner = SubtaskRunner(store, messages, output_dir, create_verifier, signature)

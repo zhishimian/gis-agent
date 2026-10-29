@@ -47,6 +47,7 @@ def result_view(result: Any, limit: int, source: dict[str, Any]) -> str:
             "ok", "returncode", "algorithm_id", "outputs", "path",
             "stdout_path", "stderr_path", "total_characters", "next_start",
             "next_offset", "next_message", "message_index", "session_id",
+            "ready", "candidate_id", "review_scope", "status", "issues", "available_evidence",
         ):
             if key in result and len(json_text(result[key])) < limit // 4:
                 view[key] = result[key]
@@ -55,6 +56,25 @@ def result_view(result: Any, limit: int, source: dict[str, Any]) -> str:
         raise ValueError("结果预览预算不足以容纳来源，请提高 tool_limit。")
     view["preview"] = text_preview(text, remaining // 2)
     return json_text(view)
+
+
+def delivery_view(result: dict[str, Any]) -> dict[str, Any]:
+    if "verification" not in result:
+        return result
+    verification = result["verification"]
+    return {
+        **{key: result[key] for key in (
+            "ok", "candidate_id", "ready", "review_scope", "request_path", "request_sha256",
+            "issues", "resolved_check_ids", "changed_files",
+        ) if key in result},
+        "verification": {
+            **{key: verification[key] for key in ("task_id", "status", "stale", "summary", "map_notes") if key in verification},
+            "checks": [
+                {key: check[key] for key in ("check_id", "status", "finding", "coverage", "evidence_indices") if key in check}
+                for check in verification.get("checks", [])
+            ],
+        },
+    }
 
 
 @dataclass
@@ -163,13 +183,20 @@ class SessionStore:
             }
             if message["role"] == "tool":
                 name = names.get(message["tool_call_id"], message.get("tool_name"))
-                if name not in CONTROL_TOOLS and len(item["content"]) > limit:
+                review = name in {"review_delivery", "read_delivery"}
+                if review or (name not in CONTROL_TOOLS and len(item["content"]) > limit):
                     source = {"path": str(self.path), "message_index": index}
                     value = json.loads(item['content'])
                     if "asset" in message:
                         path = self.asset_path(message['asset'])
                         source = {"path": str(path)}
-                        value = json.loads(path.read_text(encoding='utf-8'))
+                        data = path.read_bytes()
+                        expected = message["asset"].get("sha256")
+                        if expected is not None and hashlib.sha256(data).hexdigest() != expected:
+                            raise ValueError(f"工具结果资产校验失败：{path}")
+                        value = json.loads(data)
+                    if review:
+                        value = {**delivery_view(value), "source": source}
                     item["content"] = result_view(value, limit, source)
             projected.append(item)
         return projected

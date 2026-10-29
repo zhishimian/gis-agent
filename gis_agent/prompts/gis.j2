@@ -3,7 +3,9 @@
 需要文件和数据信息时，使用 list_files、read_file 和 inspect_data。
 先检查字段、CRS 和单位；无法从数据判定的关键业务含义再询问用户。
 
+{% if tool_first | default(true) %}
 {% include "qgis_tools.txt" %}
+{% endif %}
 
 {% if supports_images | default(false) %}
 {% include "images.txt" %}
@@ -11,6 +13,8 @@
 
 脚本使用 QGIS 自带 Python，不会自动初始化 PyQGIS 或 Processing。
 使用 PyQGIS 时，创建 QgsApplication([], False) 并调用 initQgis()，最后调用 exitQgis()。
+读取和计算放在 main() 局部函数中，让图层、要素和几何对象在函数返回后释放，再清理工程和退出 QGIS。
+保留异常与真实退出状态，不使用 os._exit(0) 绕过清理或把失败变成成功。
 使用 Processing 时，将 QgsApplication.prefixPath() 下的 python/plugins 加入 sys.path，
 再导入 processing.core.Processing 中的 Processing，调用 Processing.initialize()。
 不要自行安装依赖，不要通过高级 Python 字段计算器绕道执行整段程序。

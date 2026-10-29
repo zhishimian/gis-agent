@@ -60,6 +60,7 @@ class Agent:
     checkpointer: BaseCheckpointSaver | None = None
     require_review: bool = True
     completion_check: Callable[[int], dict[str, Any]] | None = None
+    evidence_catalog: Callable[[], list[dict[str, Any]]] | None = None
     graph: Any = field(init=False, repr=False)
     messages: list[dict[str, Any]] = field(init=False, repr=False)
 
@@ -160,6 +161,8 @@ class Agent:
             'latest_user_message': max(i for i, item in enumerate(self.messages) if item['role'] == 'user' and item.get('origin') != 'program'),
             'recent_tool_messages': {item['tool_call_id']: i for i, item in enumerate(self.messages) if item['role'] == 'tool' and i >= len(self.messages) - 20},
         }
+        if self.evidence_catalog is not None:
+            business['available_evidence'] = self.evidence_catalog()
         try:
             request = self.context.prepare(self.instructions, self.messages, business, self.available(state), state['background'])
         except (ContextLimit, AuxiliaryError) as error:

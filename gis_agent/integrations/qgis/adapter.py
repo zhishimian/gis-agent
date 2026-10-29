@@ -182,6 +182,10 @@ def execute_algorithm(
                 "error": f"输出文件已经存在：{value}",
             }
 
+    for name, parameter in definitions.items():
+        if parameter["is_destination"] and name in arguments:
+            Path(arguments[name]).parent.mkdir(parents=True, exist_ok=True)
+
     return client.execute(algorithm_id, **arguments)
 
 def make_tool(

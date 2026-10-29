@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -26,9 +27,10 @@ CHECK_SCHEMA = {
         "check_id": {"type": "string"},
         "status": {"type": "string", "enum": ["PASS", "FAIL", "UNKNOWN"]},
         "finding": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}},
         "evidence_indices": {"type": "array", "items": {"type": "integer"}},
     },
-    "required": ["check_id", "status", "finding", "evidence_indices"],
+    "required": ["check_id", "status", "finding"],
     "additionalProperties": False,
 }
 MAP_NOTE_SCHEMA = {
@@ -41,6 +43,31 @@ MAP_NOTE_SCHEMA = {
     "additionalProperties": False,
 }
 CONTEXT_TOOLS = {"update_plan", "finish_task", "define_checks", "read_session_messages", "write_file", "search_qgis_tools", "read_image"}
+
+
+def available_evidence(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    calls = {
+        call["id"]: call
+        for message in messages if message["role"] == "assistant"
+        for call in message.get("tool_calls", [])
+        if message.get("executions", {}).get(call["id"]) == "finished"
+    }
+    records = []
+    for index, message in enumerate(messages):
+        if message["role"] != "tool" or message.get("tool_name") in CONTEXT_TOOLS:
+            continue
+        call = calls.get(message["tool_call_id"])
+        if call is None:
+            continue
+        arguments = json.loads(call["function"]["arguments"])
+        result = json.loads(message["content"])
+        label = arguments.get("source") or arguments.get("script_path") or arguments.get("path") or ""
+        records.append({
+            "evidence_id": message["tool_call_id"], "message_index": index,
+            "tool_name": message["tool_name"], "label": Path(label).name if isinstance(label, str) else "",
+            "ok": result.get("ok") if isinstance(result, dict) else None,
+        })
+    return records[-20:]
 
 
 def registered_checks(
@@ -94,6 +121,9 @@ def make_verifier_finish(
     messages: list[dict[str, Any]], allowed_sources: set[int], output_dir: Path, *,
     store: SessionStore, initial_checks: list[dict[str, Any]] | None = None,
 ) -> Tool:
+    def evidence_error(error: str) -> dict[str, Any]:
+        return {"ok": False, "error": error, "available_evidence": available_evidence(messages)}
+
     def complete(
         status: str, summary: str, checks: list[dict[str, Any]], artifacts: list[str] | None = None,
         map_notes: list[dict[str, Any]] | None = None,
@@ -110,7 +140,11 @@ def make_verifier_finish(
         seen = set()
         records = {}
         for check in checks:
-            if not isinstance(check, dict) or set(check) != set(CHECK_SCHEMA["properties"]):
+            if (
+                not isinstance(check, dict)
+                or not set(CHECK_SCHEMA["required"]).issubset(check)
+                or not set(check).issubset(CHECK_SCHEMA["properties"])
+            ):
                 return {"ok": False, "error": "检查结果字段不完整。"}
             key = check["check_id"]
             if not isinstance(key, str) or key not in plan or key in seen:
@@ -120,20 +154,37 @@ def make_verifier_finish(
                 return {"ok": False, "error": "检查状态必须是 PASS、FAIL 或 UNKNOWN。"}
             if not isinstance(check["finding"], str) or not check["finding"].strip():
                 return {"ok": False, "error": "finding 需要记录观察值、比较依据或证据缺口。"}
-            indices = check["evidence_indices"]
-            if not isinstance(indices, list) or (verdict in {"PASS", "FAIL"} and not indices):
-                return {"ok": False, "error": "PASS 和 FAIL 需要工具证据；证据不足时使用 UNKNOWN。"}
+            indices = check.get("evidence_indices", [])
+            ids = check.get("evidence_ids", [])
+            if not isinstance(indices, list) or any(type(index) is not int for index in indices):
+                return evidence_error("evidence_indices 必须是整数序号列表。")
+            if not isinstance(ids, list) or any(not isinstance(value, str) or not value for value in ids):
+                return evidence_error("evidence_ids 必须是实际工具调用 ID 的列表。")
+            indices = list(indices)
+            for evidence_id in ids:
+                matches = [
+                    index for index, message in enumerate(messages)
+                    if message["role"] == "tool" and message["tool_call_id"] == evidence_id
+                ]
+                if len(matches) != 1:
+                    return evidence_error(f"证据 ID 不存在或不唯一：{evidence_id}")
+                indices.append(matches[0])
+            indices = list(dict.fromkeys(indices))
+            if verdict in {"PASS", "FAIL"} and not indices:
+                return evidence_error("PASS 和 FAIL 需要工具证据；证据不足时使用 UNKNOWN。")
             for index in indices:
                 resolved = tool_evidence(store, messages, index)
                 if not resolved["ok"]:
-                    return resolved
+                    return evidence_error(resolved["error"])
                 record = resolved["record"]
                 if record["tool_name"] in CONTEXT_TOOLS:
-                    return {"ok": False, "error": "检查结论请引用数据读取、计算或代码检查结果。"}
+                    return evidence_error("检查结论请引用数据读取、计算或代码检查结果。")
                 if verdict == "PASS" and isinstance(record["result"], dict) and record["result"].get("ok") is False:
-                    return {"ok": False, "error": "PASS 引用了失败的工具结果，请继续取证。"}
+                    return evidence_error("PASS 引用了失败的工具结果，请继续取证。")
                 records[index] = record
-            rows.append({**plan[key], **check})
+            rows.append({
+                **plan[key], "status": verdict, "finding": check["finding"], "evidence_indices": indices,
+            })
             seen.add(key)
         remaining = sorted(set(plan) - seen)
         if status == "completed" and remaining:
