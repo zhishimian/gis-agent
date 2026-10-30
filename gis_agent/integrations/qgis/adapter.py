@@ -195,6 +195,17 @@ def make_tool(
     client: QGISClient,
 ) -> Tool:
     definitions = documentation["parameters"]
+    details = documentation.get("algorithm_details", {})
+    flags = details.get("documentation_flags") or []
+    warnings = []
+    if any("regenerates_primary_key" in flag for flag in flags):
+        warnings.append("注意：输出可能重建主键/FID。关联原数据前保留独立稳定ID，并核对唯一性、重复匹配和实际空间归属。")
+    if details.get("deprecated"):
+        warnings.append("此算法已弃用，请核对当前版本推荐算法。")
+    needs_project = any(
+        (parameter["type"].get("id") if isinstance(parameter["type"], dict) else parameter["type"]) in {"layout", "layoutitem"}
+        for parameter in definitions.values()
+    )
 
     return Tool(
         name=tool_name(algorithm_id),
@@ -205,6 +216,8 @@ def make_tool(
                 metadata["name"],
                 metadata.get("group"),
                 metadata.get("short_description"),
+                *warnings,
+                details.get("help_url"),
             )
             if value
         ),
@@ -213,7 +226,7 @@ def make_tool(
             "properties": {
                 name: parameter_schema(parameter)
                 for name, parameter in definitions.items()
-            },
+            } | ({"project_path": {"type": "string", "description": "实际QGIS工程绝对路径，作为执行上下文加载。"}} if needs_project else {}),
             "required": [
                 name
                 for name, parameter in definitions.items()
@@ -222,7 +235,7 @@ def make_tool(
                     parameter["is_destination"]
                     or parameter.get("default_value") is None
                 )
-            ],
+            ] + (["project_path"] if needs_project else []),
             "additionalProperties": False,
         },
         function=partial(

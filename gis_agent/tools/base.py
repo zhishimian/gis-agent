@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from inspect import signature
 from typing import Any,Callable
 @dataclass
 class Tool:
@@ -17,4 +18,8 @@ class Tool:
             },
         }
     def run(self,arguments):
+        try:
+            signature(self.function).bind(**arguments)
+        except TypeError as error:
+            return {"ok": False, "error": f"工具参数不匹配：{error}"}
         return self.function(**arguments)

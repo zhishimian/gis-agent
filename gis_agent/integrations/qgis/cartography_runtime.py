@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -16,13 +17,21 @@ from qgis.core import (
 
 
 def digest(path: Path) -> str:
+    if path.is_dir():
+        rows = [(str(item.relative_to(path)), digest(item)) for item in sorted(path.rglob("*"))
+                if item.is_file() and not item.name.endswith(".lock")]
+        return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode("utf-8")).hexdigest()
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def initialize_qgis(
-    font_files: list[str], sample: str = "地图0123456789 −°",
+    font_files: list[str] | None = None, sample: str = "地图0123456789 −°",
 ) -> tuple[QgsApplication, dict[str, Any]]:
+    if font_files is None:
+        configured = os.environ.get("GIS_AGENT_FONT_FILES")
+        directory = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+        font_files = configured.split(";") if configured else [str(directory / name) for name in ("msyh.ttc", "arial.ttf")]
     app = QgsApplication([], False)
     app.initQgis()
     if not font_files:
@@ -129,8 +138,7 @@ def create_layout(
     map_item.attemptMove(QgsLayoutPoint(10, 30))
     map_item.attemptResize(QgsLayoutSize((width - 20) * 0.70, height - 45))
     map_item.setCrs(crs)
-    map_item.setLayers(layers)
-    map_item.setKeepLayerSet(True)
+    set_map_layers(map_item, layers)
     extent = QgsRectangle()
     for layer in layers:
         extent.combineExtentWith(QgsCoordinateTransform(layer.crs(), crs, project).transformBoundingBox(layer.extent()))
@@ -231,16 +239,19 @@ def export_layout(
             raise ValueError("局部图保存失败或超过 8 MiB。")
         regions.append({**detail, "path": relative})
     files["details"] = regions
+    files = {key: value for key, value in files.items() if not isinstance(value, str) or (output_dir / value).is_file()}
     paths = [value for value in files.values() if isinstance(value, str)] + list(styles.values())
     paths += [item["path"] for item in regions]
     input_paths = sorted({Path(value).expanduser().resolve() for value in [
         *inputs, __file__, *(item["path"] for item in fonts["files"]),
     ]})
-    if any(path.is_relative_to(output_dir) for path in input_paths):
-        raise ValueError("冻结 inputs 与当前 outputs 必须分开。")
+    input_paths = sorted(set(input_paths) | {
+        path.with_suffix(suffix) for path in input_paths if path.suffix.lower() == ".shp"
+        for suffix in (".shx", ".dbf", ".prj", ".cpg") if path.with_suffix(suffix).is_file()
+    })
     for layer in project.mapLayers().values():
         source = Path(layer.source().split("|")[0]).resolve()
-        if not source.is_file() or (source not in input_paths and not source.is_relative_to(output_dir)):
+        if not source.exists() or (source not in input_paths and not source.is_relative_to(output_dir)):
             raise ValueError(f"请登记本地数据依赖：{source}")
         if source.is_relative_to(output_dir) and str(source.relative_to(output_dir)) not in paths:
             paths.append(str(source.relative_to(output_dir)))
@@ -253,7 +264,8 @@ def export_layout(
         "layout": {"name": layout.name(), "size_mm": [page.width(), page.height()]},
         "maps": [
             {"id": item.id(), "crs": item.crs().authid(), "scale": item.scale(),
-             "extent": [item.extent().xMinimum(), item.extent().yMinimum(), item.extent().xMaximum(), item.extent().yMaximum()]}
+             "extent": [item.extent().xMinimum(), item.extent().yMinimum(), item.extent().xMaximum(), item.extent().yMaximum()],
+             "layers_top_first": [layer.name() for layer in item.layers()]}
             for item in maps
         ],
         "layers": [{"id": layer.id(), "name": layer.name(), "source": layer.source(),
@@ -262,63 +274,47 @@ def export_layout(
     }
     path = output_dir / "manifest.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {
+    result = {
         "ok": True, "manifest": str(path), "manifest_sha256": digest(path),
+        "files": files, "maps": manifest["maps"], "layout": manifest["layout"],
+        "preview": str(output_dir / files["preview"]),
         "artifacts": [str(output_dir / value) for value in sorted(set(paths))] + [str(path)],
     }
+    write_result(result)
+    return result
 
 
-def stage_candidate(manifest_path: str, destination: str) -> dict:
-    source_manifest = Path(manifest_path).resolve()
-    source = source_manifest.parent
-    manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
-    for row in [*manifest["inputs"], *manifest["outputs"]]:
-        path = Path(row["path"]) if Path(row["path"]).is_absolute() else source / row["path"]
-        if not path.is_file() or digest(path) != row["sha256"]:
-            raise ValueError(f"源候选文件已变化：{path}")
-    for row in manifest["environment"]["fonts"]["files"]:
-        if digest(Path(row["path"])) != row["sha256"]:
-            raise ValueError(f"源候选字体版本已变化：{row['path']}")
-    target = Path(destination).resolve()
-    target.mkdir(parents=True, exist_ok=False)
-    for row in manifest["outputs"]:
-        relative = Path(row["path"])
-        if relative.is_absolute() or not (source / relative).resolve().is_relative_to(source) or not (target / relative).resolve().is_relative_to(target):
-            raise ValueError("产物路径超出候选目录。")
-        (target / relative).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source / relative, target / relative)
-    design_path = target / manifest["files"]["design"]
-    design = json.loads(design_path.read_text(encoding="utf-8"))
-    if "output_dir" in design:
-        design["output_dir"] = str(target)
-        design_path.write_text(json.dumps(design, ensure_ascii=False, indent=2), encoding="utf-8")
-    app, fonts = initialize_qgis([item["path"] for item in manifest["environment"]["fonts"]["files"]])
+def write_result(result: dict) -> None:
+    path = os.environ.get("GIS_AGENT_RESULT_PATH")
+    if path:
+        Path(path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+
+
+def set_map_layers(map_item: QgsLayoutItemMap, thematic: list, background: list | None = None) -> None:
+    layers = [*thematic, *(background or [])]
+    if not layers or any(not layer.isValid() for layer in layers):
+        raise ValueError("地图需要有效图层，thematic从上到下排列，背景放在background。")
+    map_item.setLayers(layers)
+    map_item.setKeepLayerSet(True)
+
+
+def export_project(project_path: str, output_dir: str, layout_name: str | None = None, formats: list[str] | None = None) -> dict:
+    if Path(project_path).resolve().is_relative_to(Path(output_dir).resolve()):
+        raise ValueError("源工程位于输出目录中，请使用独立输出目录，避免覆盖。")
+    destination = Path(output_dir).resolve()
+    if destination.exists() and any(destination.iterdir()):
+        raise ValueError("重开工程导出需要空输出目录，避免混入其他图件。")
+    app, fonts = initialize_qgis()
     project = QgsProject.instance()
     try:
-        if not project.read(str(target / manifest["files"]["project"])):
-            raise ValueError("候选工程重开失败。")
-        for layer in project.mapLayers().values():
-            base, separator, options = layer.source().partition("|")
-            path = Path(base).resolve()
-            if path.is_relative_to(source):
-                layer.setDataSource(str(target / path.relative_to(source)) + separator + options, layer.name(), layer.providerType())
-                message, ok = layer.loadNamedStyle(str(target / manifest["files"]["styles"][layer.id()]))
-                if not ok:
-                    raise ValueError(message)
-            if not layer.isValid():
-                raise ValueError(f"候选图层无效：{layer.name()}")
-        layout = project.layoutManager().layoutByName(manifest["layout"]["name"])
+        if not project.read(str(Path(project_path).resolve())):
+            raise ValueError("QGIS工程重开失败。")
+        layouts = project.layoutManager().layouts()
+        layout = project.layoutManager().layoutByName(layout_name) if layout_name else (layouts[0] if len(layouts) == 1 else None)
         if layout is None:
-            raise ValueError("候选工程缺少布局。")
-        result = export_layout(
-            project, layout, target, inputs=[str(source_manifest), *(row["path"] for row in manifest["inputs"])],
-            fonts=fonts, formats=[kind for kind in ("png", "pdf", "svg") if kind in manifest["files"]],
-            details=manifest["files"].get("details"),
-            provenance={"source_manifest": str(source_manifest), "source_manifest_sha256": digest(source_manifest),
-                        "source_task_id": source.name},
-        )
-        return result
+            raise ValueError(f"请指定实际布局名称：{[item.name() for item in layouts]}")
+        return export_layout(project, layout, Path(output_dir), fonts=fonts,
+                             inputs=[project_path, *(layer.source().split("|")[0] for layer in project.mapLayers().values())], formats=formats)
     finally:
         project.clear()
         app.exitQgis()
-

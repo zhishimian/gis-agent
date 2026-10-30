@@ -1,4 +1,5 @@
 import base64
+import hashlib
 from typing import Any
 
 from openai import APIError, OpenAI
@@ -73,6 +74,12 @@ def chat(
     messages: list[dict[str, Any]], schemas: list[dict[str, Any]],
 ) -> ModelReply:
     view, _ = request_view(messages, config)
+    fingerprint = {
+        "messages": [{"role": item["role"], "characters": len(json_text(item)),
+                      "sha256": hashlib.sha256(json_text(item).encode("utf-8")).hexdigest()} for item in view],
+        "tools": [{"name": item["function"]["name"],
+                   "sha256": hashlib.sha256(json_text(item).encode("utf-8")).hexdigest()} for item in schemas],
+    }
     for message in view:
         if isinstance(message.get("content"), list):
             message["content"] = [image_part(part) for part in message["content"]]
@@ -93,4 +100,5 @@ def chat(
         model=response.model,
         usage=response.usage.model_dump() if response.usage else None,
         finish_reason=choice.finish_reason,
+        request=fingerprint,
     )

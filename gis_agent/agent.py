@@ -23,16 +23,17 @@ from gis_agent.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 PASSIVE_TOOLS = {
     'update_plan', 'finish_task', 'read_session_messages',
-    'search_memory', 'remember_memory', 'forget_memory', 'read_verification', 'define_checks', 'read_delivery',
-    'read_cartography', 'read_cartography_rules',
+    'search_memory', 'remember_memory', 'forget_memory',
+    'list_files', 'read_file', 'search_text', 'inspect_data', 'summarize_fields',
+    'check_spatial_relation', 'read_image', 'search_qgis_tools', 'calculate_distance',
 }
 
 
 class RunState(TypedDict):
+    version: int
     turn_start: int
     model_index: int
     responses_used: int
-    review_started: bool
     execution_started: bool
     algorithms: list[str]
     callable_names: list[str]
@@ -58,9 +59,6 @@ class Agent:
     memory: MemoryStore | None = None
     memory_turn: MemoryTurn | None = None
     checkpointer: BaseCheckpointSaver | None = None
-    require_review: bool = True
-    completion_check: Callable[[int], dict[str, Any]] | None = None
-    evidence_catalog: Callable[[], list[dict[str, Any]]] | None = None
     graph: Any = field(init=False, repr=False)
     messages: list[dict[str, Any]] = field(init=False, repr=False)
 
@@ -112,8 +110,9 @@ class Agent:
             self.memory_turn.reset(start)
         self.store.save(messages)
         state: RunState = {
+            'version': 79,
             'turn_start': start, 'model_index': len(messages), 'responses_used': 0,
-            'review_started': False, 'execution_started': False, 'algorithms': [],
+            'execution_started': False, 'algorithms': [],
             'callable_names': [], 'memory_errors': [], 'handled_sources': [], 'handled_bodies': [],
             'background': self.recall(start), 'record_hash': self.record_hash(),
             'auxiliary_used': 0, 'outcome': None,
@@ -124,6 +123,8 @@ class Agent:
         snapshot = self.graph.get_state(self.options())
         if not snapshot.next:
             raise ValueError('没有待续跑的检查点。')
+        if snapshot.values.get('version') != 79:
+            raise ValueError('检查点来自旧版执行流程，请保留原记录，新建会话并提供已有成果路径。')
         self.verify_record(snapshot.values)
         messages[:] = self.store.read_record()
         self.messages = messages
@@ -156,13 +157,9 @@ class Agent:
     def model(self, state: RunState) -> dict[str, Any]:
         message_units(self.messages)
         business = {
-            'plan': self.plan.snapshot(), 'review_started': state['review_started'],
-            'execution_started': state['execution_started'], 'responses_used': state['responses_used'],
             'latest_user_message': max(i for i, item in enumerate(self.messages) if item['role'] == 'user' and item.get('origin') != 'program'),
             'recent_tool_messages': {item['tool_call_id']: i for i, item in enumerate(self.messages) if item['role'] == 'tool' and i >= len(self.messages) - 20},
         }
-        if self.evidence_catalog is not None:
-            business['available_evidence'] = self.evidence_catalog()
         try:
             request = self.context.prepare(self.instructions, self.messages, business, self.available(state), state['background'])
         except (ContextLimit, AuxiliaryError) as error:
@@ -185,6 +182,8 @@ class Agent:
         self.store.save(self.messages)
         return {
             'responses_used': state['responses_used'] + 1,
+            'algorithms': [algorithm for algorithm in state['algorithms']
+                           if self.load_qgis_tool(algorithm).name in request.callable_names],
             'callable_names': sorted(request.callable_names), 'record_hash': self.record_hash(),
             'auxiliary_used': self.context.auxiliary.used, 'outcome': outcome,
         }
@@ -216,7 +215,7 @@ class Agent:
                     if name not in PASSIVE_TOOLS:
                         state['execution_started'] = True
                     result = self.registry.execute(name, arguments)
-                    if name == 'search_qgis_tools':
+                    if name == 'search_qgis_tools' and isinstance(result, list):
                         algorithms = list(state['algorithms'])
                         for item in result:
                             tool = self.load_qgis_tool(item['algorithm_id'])
@@ -253,19 +252,6 @@ class Agent:
             return {"ok": False, "error": "记忆操作仍有失败项，请重试对应操作或报告 blocked。"}
         if status == "answer" and state["execution_started"]:
             return {"ok": False, "error": "本轮已执行操作，请报告任务状态。"}
-        if status == "completed" and self.require_review:
-            if self.completion_check is not None:
-                state["review_started"] = True
-                reviewed = self.completion_check(state["turn_start"])
-                if not reviewed["ok"]:
-                    return {**reviewed, "status": "review_required"}
-                result = {**result, "delivery": reviewed["delivery"], "artifacts": reviewed["artifacts"]}
-            elif not state["review_started"]:
-                state["review_started"] = True
-                return {
-                    **result, "status": "review_required", "instruction": render_prompt("review.txt"),
-                    "unfinished": self.plan.unfinished(),
-                }
         if status == "completed" and self.plan.unfinished():
             return {"ok": False, "error": "计划仍有未完成项，请继续处理或报告阻碍。", "unfinished": self.plan.unfinished()}
         state["outcome"] = result

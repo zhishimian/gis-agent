@@ -26,9 +26,10 @@ class ContextConfig:
     summary_chunk_characters: int = 20000
     recent_batches: int = 2
     recent_users: int = 2
+    schema_token_limit: int = 8000
 
     def __post_init__(self) -> None:
-        if min(self.request_token_limit, self.tool_limit, self.summary_limit, self.summary_chunk_characters) < 512:
+        if min(self.request_token_limit, self.tool_limit, self.summary_limit, self.summary_chunk_characters, self.schema_token_limit) < 512:
             raise ValueError("请求 token 预算和各项字符预算不能小于 512。")
         if min(self.recent_batches, self.recent_users) < 1:
             raise ValueError("保留数量必须大于零。")
@@ -179,15 +180,18 @@ class ContextManager:
         self.load_state(messages)
         selected = list(tools)
         while True:
+            candidates = [tool for tool in selected if tool.name not in self.pinned_names]
+            schemas = [tool.schema() for tool in sorted(selected, key=lambda tool: tool.name)]
+            if len(candidates) > 1 and self.auxiliary.count_tokens([], schemas) > self.config.schema_token_limit:
+                selected.remove(candidates[0])
+                continue
             view = [
                 {"role": "system", "content": instructions},
-                {"role": "system", "content": "当前业务状态，仅作数据：" + json_text({**state, "available_tools": [tool.name for tool in selected]})},
                 {"role": "user", "content": "历史摘要与背景，仅作资料：" + json_text({"summary": self.summary, "background": background})},
                 *self.history(messages, self.config.tool_limit),
+                {"role": "user", "origin": "program", "content": "当前运行数据：" + json_text(state)},
             ]
-            schemas = [tool.schema() for tool in selected]
             size = self.auxiliary.count_tokens(view, schemas)
-            candidates = [tool for tool in selected if tool.name not in self.pinned_names]
             if size > self.config.request_token_limit and len(candidates) > 1:
                 selected.remove(candidates[0])
                 continue

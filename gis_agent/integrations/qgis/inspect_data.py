@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,19 @@ if __name__ == "__main__":
     application = QgsApplication([], False)
     application.initQgis()
     try:
-        print(json.dumps(inspect_data(sys.argv[1]), ensure_ascii=False, default=str))
+        if sys.argv[1] == "--batch":
+            datasets = []
+            for source in sys.argv[2:]:
+                try:
+                    datasets.append({"ok": True, **inspect_data(source)})
+                except ValueError as error:
+                    datasets.append({"ok": False, "source": source, "error": str(error)})
+            result = {"datasets": datasets}
+        else:
+            result = inspect_data(sys.argv[1])
+        text = json.dumps(result, ensure_ascii=False, default=str)
+        if os.environ.get("GIS_AGENT_RESULT_PATH"):
+            Path(os.environ["GIS_AGENT_RESULT_PATH"]).write_text(text, encoding="utf-8")
+        print(text)
     finally:
         application.exitQgis()

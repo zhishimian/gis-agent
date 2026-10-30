@@ -42,9 +42,12 @@ class QGISClient:
         self,
         algorithm_id:str,
         /,
+        project_path: str | None = None,
         **parameters:Any,
     )->dict[str,Any]:
-        response=self._call("run",algorithm_id,"-",payload={"inputs":parameters},)
+        if project_path is not None and (not Path(project_path).is_absolute() or not Path(project_path).is_file()):
+            return {"ok": False, "error": "project_path 必须是已有QGIS工程的绝对路径。"}
+        response=self._call("run",algorithm_id,"-",payload={"inputs":parameters, **({"project_path": project_path} if project_path else {})},)
 
         if response.returncode!=0:
             return {

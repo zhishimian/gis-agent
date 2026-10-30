@@ -35,7 +35,6 @@ from gis_agent.tools.memory import make_memory_tools
 from gis_agent.tools.planning import make_planning_tools
 from gis_agent.tools.qgis_python import inspect_data, make_qgis_python_tools, run_python_script
 from gis_agent.tools.registry import ToolRegistry
-from gis_agent.tools.verification import available_evidence, make_verifier_finish
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,18 +43,6 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(scope="session")
 def count_tokens():
     return make_token_counter(ModelConfig())
-
-
-@pytest.fixture
-def qgis_dir() -> Path:
-    value = os.environ.get("GIS_AGENT_QGIS_DIR") or dotenv_values(ROOT / ".env").get("GIS_AGENT_QGIS_DIR")
-    if not value:
-        pytest.skip("请设置 GIS_AGENT_QGIS_DIR。")
-    path = Path(value).expanduser().resolve()
-    for launcher in ("qgis_process-qgis-ltr.bat", "python-qgis-ltr.bat"):
-        if not (path / "bin" / launcher).is_file():
-            pytest.skip("未找到 QGIS；可设置 GIS_AGENT_QGIS_DIR 为安装目录。")
-    return path
 
 
 @pytest.fixture
@@ -139,101 +126,7 @@ def test_qgis_creates_output_parent(tmp_path: Path, qgis_dir: Path, points: Path
     assert measured["ok"] and measured["returncode"] == 0, measured
 
 
-def test_verifier_receives_evidence_catalog_without_plan(tmp_path: Path, count_tokens) -> None:
-    store = SessionStore(tmp_path, "verifier")
-    messages = [{"role": "user", "origin": "delegation", "content": "核验实际读取。"}]
-    data = tmp_path / "measurement.txt"
-    data.write_text("实际测量通过。", encoding="utf-8")
-    definitions = [{
-        "check_id": "measure", "requirement": "核验实际读取", "source_indices": [0],
-        "criterion": "实际测量满足要求", "method": "读取测量结果", "coverage": "本次结果",
-    }]
-    finish = make_verifier_finish(messages, {0}, tmp_path / "output", store=store, initial_checks=definitions)
-    tools = [next(tool for tool in file_tools if tool.name == "read_file"), finish]
-    registry = ToolRegistry()
-    for tool in tools:
-        registry.register(tool)
-    requests = []
-
-    def fixed(view, schemas):
-        requests.append(view)
-        if len(requests) == 1:
-            return reply("measurement", "read_file", {"path": str(data)})
-        business = json.loads(view[1]["content"].split("：", 1)[1])
-        evidence = business["available_evidence"][0]
-        assert evidence["tool_name"] == "read_file" and evidence["label"] == data.name
-        return reply("complete", "finish_task", {
-            "status": "completed", "summary": "重点通过。",
-            "checks": [{"check_id": "measure", "status": "PASS", "finding": "实际测量通过。", "evidence_ids": [evidence["evidence_id"]]}],
-        })
-
-    agent = Agent(
-        registry, tools, unexpected_model_call, Plan(), "按实际证据核验。", fixed,
-        store, make_context(store, ContextConfig(), {tool.name for tool in tools}, count_tokens),
-        require_review=False, evidence_catalog=partial(available_evidence, messages),
-    )
-    result = agent.run(messages)
-    assert result["ok"] and result["status"] == "completed"
-    assert result["checks"][0]["evidence_indices"] == [2]
-    assert len(requests) == 2 and not agent.plan.steps
-
-
-def test_parent_verifier_round_trip(tmp_path: Path, qgis_dir: Path, count_tokens, monkeypatch) -> None:
-    config = AppConfig.from_env(ROOT)
-    config = replace(
-        config, model=replace(config.model, supports_images=False), memory=None,
-        api_key_env="GIS_AGENT_OFFLINE_TEST_KEY", session_root=tmp_path / "sessions", output_root=tmp_path / "outputs",
-    )
-    monkeypatch.setenv(config.api_key_env, "offline-test")
-    candidate = config.output_root / "parent" / "candidates" / "first" / "result.txt"
-    definitions = [{
-        "check_id": "content", "requirement": "保存实际文本", "source_indices": [0],
-        "criterion": "文本内容为结果", "method": "读取实际文件", "coverage": "完整文件",
-    }]
-    counts = {"parent": 0, "verifier": 0}
-
-    def fixed(client, model, view, schemas):
-        finish_schema = next(item["function"]["parameters"] for item in schemas if item["function"]["name"] == "finish_task")
-        role = "verifier" if "checks" in finish_schema["properties"] else "parent"
-        counts[role] += 1
-        if role == "verifier":
-            if counts[role] == 1:
-                return reply("define", "define_checks", {"checks": definitions})
-            if counts[role] == 2:
-                return reply("read-result", "read_file", {"path": str(candidate)})
-            business = json.loads(view[1]["content"].split("：", 1)[1])
-            evidence_id = next(item["evidence_id"] for item in business["available_evidence"] if item["ok"])
-            return reply("verified", "finish_task", {
-                "status": "completed", "summary": "内容符合要求。",
-                "checks": [{"check_id": "content", "status": "PASS", "finding": "读取内容为结果。", "evidence_ids": [evidence_id]}],
-            })
-        if counts[role] == 1:
-            return reply("write-result", "write_file", {"path": str(candidate), "content": "结果"})
-        if counts[role] == 2:
-            return reply("review", "review_delivery", {
-                "candidate_id": "first", "goal": "写入结果文本，核验实际内容。", "source_indices": [0],
-                "inputs": [], "deliverables": [str(candidate)],
-            })
-        reviewed = next(json.loads(item["content"]) for item in view if item.get("tool_call_id") == "review")
-        assert reviewed["ready"] and "definitions" not in reviewed
-        return reply("finish", "finish_task", {"status": "completed", "summary": "文件已保存并通过重点复核。"})
-
-    monkeypatch.setattr(application, "chat", fixed)
-    monkeypatch.setattr(application, "make_token_counter", lambda _: count_tokens)
-    with application.open_conversation(config, "parent") as conversation:
-        result = conversation.send("保存内容为结果的文本文件，并核验实际内容。")
-        assert result["ok"] and result["delivery"]["checks"][0]["evidence_indices"] == [4]
-        assert not conversation.agent.plan.steps
-    with application.open_conversation(config, "parent") as conversation:
-        assert not conversation.pending
-        cached = conversation.agent.registry.execute("read_delivery", {"candidate_id": "first"})
-        assert cached["ready"]
-        candidate.write_text("发生变化", encoding="utf-8")
-        assert not conversation.agent.completion_check(0)["ok"]
-    assert counts == {"parent": 3, "verifier": 3}
-
-
-def test_v5_plan_review_and_session_restore(tmp_path: Path, count_tokens) -> None:
+def test_plan_blocks_unfinished_work_and_restores_session(tmp_path: Path, count_tokens) -> None:
     store = SessionStore(tmp_path, "planning")
     plan = Plan()
     registry = ToolRegistry()
@@ -242,9 +135,9 @@ def test_v5_plan_review_and_session_restore(tmp_path: Path, count_tokens) -> Non
         registry.register(tool)
     replies = iter([
         reply("plan", "update_plan", {"goal": "检查交付", "steps": [{"content": "复核结果", "status": "pending"}]}),
-        reply("review", "finish_task", {"status": "completed", "summary": "申请复核"}),
+        reply("review", "finish_task", {"status": "completed", "summary": "检查计划状态"}),
         reply("checked", "update_plan", {"goal": "检查交付", "steps": [{"content": "复核结果", "status": "completed"}]}),
-        reply("finish", "finish_task", {"status": "completed", "summary": "复核完成"}),
+        reply("finish", "finish_task", {"status": "completed", "summary": "已完成"}),
     ])
     agent = Agent(
         registry, tools, unexpected_model_call, plan, "按要求复核。", lambda *_: next(replies),
@@ -254,7 +147,8 @@ def test_v5_plan_review_and_session_restore(tmp_path: Path, count_tokens) -> Non
     assert agent.run(messages)["status"] == "completed"
     saved = store.load()
     results = [json.loads(item["content"]) for item in saved if item.get("tool_name") == "finish_task"]
-    assert [item["status"] for item in results] == ["review_required", "completed"]
+    assert not results[0]["ok"] and "未完成" in results[0]["error"]
+    assert results[1]["status"] == "completed"
     assert not Plan.from_messages(saved).unfinished()
     with pytest.raises(ValueError, match="未完成"):
         message_units(saved[:2])
@@ -380,7 +274,7 @@ def test_v71_graph_continues_beyond_thirty_responses(tmp_path: Path, count_token
     replies = iter([
         reply("plan", "update_plan", pending),
         *(reply(f"record_{index}", tool.name, {}) for index in range(35)),
-        reply("review", "finish_task", {"status": "completed", "summary": "请求复核"}),
+        reply("review", "finish_task", {"status": "completed", "summary": "检查计划状态"}),
         reply("checked", "update_plan", completed),
         reply("finish", "finish_task", {"status": "completed", "summary": "完成"}),
     ])
@@ -396,7 +290,7 @@ def test_v71_graph_continues_beyond_thirty_responses(tmp_path: Path, count_token
     message_units(store.load())
 
 
-def test_v71_sqlite_resume_preserves_review_and_tool_results(tmp_path: Path, count_tokens) -> None:
+def test_sqlite_resume_protects_version_and_tool_results(tmp_path: Path, count_tokens) -> None:
     output = tmp_path / "result.txt"
 
     def save_result() -> dict[str, Any]:
@@ -407,13 +301,12 @@ def test_v71_sqlite_resume_preserves_review_and_tool_results(tmp_path: Path, cou
     tool = Tool("save_result", "保存成果", {"type": "object"}, save_result)
     replies = iter([
         reply("save", tool.name, {}),
-        reply("review", "finish_task", {"status": "completed", "summary": "请求复核"}),
     ])
 
     def disconnected_chat(*args: Any) -> ModelReply:
         response = next(replies, None)
         if response is None:
-            raise ConnectionError("模拟复核期间连接中断。")
+            raise ConnectionError("模拟模型连接中断。")
         return response
 
     store = SessionStore(tmp_path / "sessions", "resume")
@@ -424,14 +317,18 @@ def test_v71_sqlite_resume_preserves_review_and_tool_results(tmp_path: Path, cou
             agent.run([{"role": "user", "origin": "user", "content": "保存成果并复核。"}])
     with SqliteSaver.from_conn_string(checkpoint) as saver:
         agent = make_graph_agent(
-            store, lambda *_: reply("finish", "finish_task", {"status": "completed", "summary": "复核完成"}),
+            store, lambda *_: reply("finish", "finish_task", {"status": "completed", "summary": "已完成"}),
             count_tokens, saver, (tool,),
         )
+        agent.graph.update_state(agent.options(), {"version": 78}, as_node="tools")
+        with pytest.raises(ValueError, match="旧版执行流程"):
+            agent.resume(store.read_record())
+        agent.graph.update_state(agent.options(), {"version": 79}, as_node="tools")
         assert agent.resume(store.read_record())["status"] == "completed"
-        assert agent.graph.get_state(agent.options()).values["responses_used"] == 3
+        assert agent.graph.get_state(agent.options()).values["responses_used"] == 2
     assert output.read_text(encoding="utf-8") == "成果\n"
     results = [json.loads(item["content"]) for item in store.load() if item.get("tool_name") == "finish_task"]
-    assert [item["status"] for item in results] == ["review_required", "completed"]
+    assert [item["status"] for item in results] == ["completed"]
 
 
 def test_v71_uncertain_tool_execution_is_not_replayed(tmp_path: Path, count_tokens) -> None:
@@ -551,7 +448,7 @@ def test_live_api_qgis_buffer_and_memory(tmp_path: Path, qgis_dir: Path, points:
     messages = session.load()
     finish_results = [json.loads(item["content"]) for item in messages if item.get("tool_name") == "finish_task"]
     assert finish_results and finish_results[-1].get("status") == "completed", finish_results
-    assert any(item.get("status") == "review_required" for item in finish_results)
+    assert all(item.get("status") != "review_required" for item in finish_results)
     assert Plan.from_messages(messages).steps and not Plan.from_messages(messages).unfinished()
     assert any(item.get("tool_name") == "search_qgis_tools" for item in messages)
     assert any(item.get("tool_name") == tool_name("native:buffer") and json.loads(item["content"]).get("ok") for item in messages)

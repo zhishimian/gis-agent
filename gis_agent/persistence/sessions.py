@@ -58,25 +58,6 @@ def result_view(result: Any, limit: int, source: dict[str, Any]) -> str:
     return json_text(view)
 
 
-def delivery_view(result: dict[str, Any]) -> dict[str, Any]:
-    if "verification" not in result:
-        return result
-    verification = result["verification"]
-    return {
-        **{key: result[key] for key in (
-            "ok", "candidate_id", "ready", "review_scope", "request_path", "request_sha256",
-            "issues", "resolved_check_ids", "changed_files",
-        ) if key in result},
-        "verification": {
-            **{key: verification[key] for key in ("task_id", "status", "stale", "summary", "map_notes") if key in verification},
-            "checks": [
-                {key: check[key] for key in ("check_id", "status", "finding", "coverage", "evidence_indices") if key in check}
-                for check in verification.get("checks", [])
-            ],
-        },
-    }
-
-
 @dataclass
 class SessionStore:
     root: Path
@@ -183,8 +164,7 @@ class SessionStore:
             }
             if message["role"] == "tool":
                 name = names.get(message["tool_call_id"], message.get("tool_name"))
-                review = name in {"review_delivery", "read_delivery"}
-                if review or (name not in CONTROL_TOOLS and len(item["content"]) > limit):
+                if "asset" in message or (name not in CONTROL_TOOLS and len(item["content"]) > limit):
                     source = {"path": str(self.path), "message_index": index}
                     value = json.loads(item['content'])
                     if "asset" in message:
@@ -195,8 +175,6 @@ class SessionStore:
                         if expected is not None and hashlib.sha256(data).hexdigest() != expected:
                             raise ValueError(f"工具结果资产校验失败：{path}")
                         value = json.loads(data)
-                    if review:
-                        value = {**delivery_view(value), "source": source}
                     item["content"] = result_view(value, limit, source)
             projected.append(item)
         return projected

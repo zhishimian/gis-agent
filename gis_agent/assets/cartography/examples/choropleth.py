@@ -1,4 +1,4 @@
-"""设计JSON必需：brief、output_dir、runtime_dir、font_files、crs、breaks、colors。
+"""设计JSON必需：brief、output_dir、crs、breaks、colors。
 可选：title、legend_title、size_mm、label_field、label_size_pt、details。
 """
 import json
@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 settings = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-sys.path.insert(0, settings["runtime_dir"])
+sys.path.insert(0, settings.get("runtime_dir", str(Path(__file__).resolve().parents[3] / "integrations" / "qgis")))
 
 from cartography_runtime import create_layout, export_layout, initialize_qgis, load_vector, prepare_map
 from qgis.core import (
@@ -19,7 +19,7 @@ from qgis.core import (
 def render(design_path: str) -> dict:
     design, brief, output = prepare_map(design_path, __file__)
     title = design.get("title", brief["question"])
-    app, fonts = initialize_qgis(design["font_files"], title + "图例无数据0123456789−°")
+    app, fonts = initialize_qgis(design.get("font_files"), title + "图例无数据0123456789−°")
     project = QgsProject.instance()
     try:
         source = brief["inputs"][0]
@@ -63,7 +63,7 @@ def render(design_path: str) -> dict:
         layout = create_layout(project, [layer], design, title, fonts["primary_family"])
         return export_layout(
             project, layout, output, fonts=fonts,
-            inputs=[design["brief"], *(item["source"].split("|")[0] for item in brief["inputs"])],
+            inputs=[design_path, __file__, design["brief"], *(item["source"].split("|")[0] for item in brief["inputs"])],
             formats=brief.get("medium", {}).get("format", ["png", "qgz"]), details=design.get("details"),
         )
     finally:

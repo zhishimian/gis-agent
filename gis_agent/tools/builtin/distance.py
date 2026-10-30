@@ -20,7 +20,7 @@ def calculate_distance(lat1,lon1,lat2,lon2):
 
 distance_tool=Tool(
     name="calculate_distance",
-    description=("calculate the great-circle distance between two geographic coordinates"),
+    description=("计算两组经纬度的球面大圆距离，返回千米。输入为角度；不用于投影平面距离或道路距离。"),
     parameters={
         "type":"object",
         "properties":{

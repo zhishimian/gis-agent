@@ -37,9 +37,11 @@ class ModelReply:
     model: str
     usage: dict[str, Any] | None
     finish_reason: str | None
+    request: dict[str, Any] | None = None
 
     def metadata(self) -> dict[str, Any]:
-        return {"model": self.model, "usage": self.usage, "finish_reason": self.finish_reason}
+        return {"model": self.model, "usage": self.usage, "finish_reason": self.finish_reason,
+                **({"request": self.request} if self.request is not None else {})}
 
 
 class ModelError(RuntimeError):
