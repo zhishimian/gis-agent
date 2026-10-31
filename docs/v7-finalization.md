@@ -57,6 +57,8 @@ V7.9.2 的 95/100 是开发自审。V7.9.3 两场均未完成，合计 173 次�
 
 合并后在 main 再次运行完整免费回归：50 项通过，1 项 live 测试排除，110.44 秒。日志为 `outputs/v7_finalization_20261031/postmerge.txt` 和 `postmerge.xml`。两轮没有收费模型调用，没有重新运行竞赛试题。
 
+附加运行本机 Skill Creator 的旧 `quick_validate.py`，三个 Skill 均因白名单不含标准顶层 `compatibility` 被拒绝。这是 V7.9.2 已记录的外部校验器兼容问题；项目标准字段、索引、英文内容和引用路径检查通过。保留标准字段及拒绝日志，不修改外部工具。
+
 ### Git 整理
 
 检查了本地与远端分支、工作树和 stash。相关分支只有 main 与 langgraph；没有额外工作树或 stash 待整合。远端分支已 fetch 核对。
