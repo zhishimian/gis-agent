@@ -24,7 +24,7 @@ from gis_agent.integrations.qgis.client import QGISClient
 from gis_agent.persistence.sessions import SessionStore
 from gis_agent.prompts import render_prompt
 from gis_agent.tools.builtin import builtin_tools
-from gis_agent.tools.cartography import make_cartography_tools
+from gis_agent.skills import skill_index
 from gis_agent.tools.files import file_tools
 from gis_agent.tools.images import make_image_tool
 from gis_agent.tools.memory import make_memory_tools
@@ -77,7 +77,6 @@ class AgentFactory:
                 self.config.qgis.python_launcher,
                 output_dir / "python_logs", self.config.qgis.font_files,
             ),
-            *make_cartography_tools(self.config.qgis.python_launcher, output_dir / "python_logs", self.config.qgis.font_files),
             *planning, make_session_tool(store), *(extra_tools or []),
         ]
         if self.config.model.supports_images:
@@ -122,7 +121,7 @@ def open_conversation(config: AppConfig, session_id: str) -> Iterator[Conversati
             render_prompt(
                 "system.j2", output_dir=output_dir,
                 supports_images=config.model.supports_images, supports_memory=memory is not None,
-                skills_dir=Path(__file__).resolve().parent / "skills",
+                skills=skill_index(),
             ),
             memory=memory, turn=turn,
         )

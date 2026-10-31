@@ -33,14 +33,20 @@ def run_python_script(
     stdout_path = log_dir / "stdout.txt"
     stderr_path = log_dir / "stderr.txt"
     result_path = log_dir / "result.json"
+    request_path = log_dir / "request.json"
+    request_path.write_text(json.dumps({"script": str(script), "arguments": arguments or []}, ensure_ascii=False), encoding="utf-8")
+    entry = Path(__file__).resolve().parents[1] / "integrations" / "qgis" / "script_entry.py"
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         result = subprocess.run(
-            [str(launcher), "-B", str(script), *(arguments or [])],
+            [str(launcher), "-B", str(entry)],
             cwd=script.parent,
             env=os.environ | {
                 "PYTHONIOENCODING": "utf-8",
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "QT_QPA_PLATFORM": "offscreen",
+                "MPLBACKEND": "Agg",
+                "GIS_AGENT_PROJECT_ROOT": str(Path(__file__).resolve().parents[2]),
+                "GIS_AGENT_SCRIPT_REQUEST": str(request_path),
                 "GIS_AGENT_RESULT_PATH": str(result_path),
                 **({"GIS_AGENT_FONT_FILES": ";".join(str(path) for path in font_files)} if font_files else {}),
             },
@@ -57,12 +63,15 @@ def run_python_script(
         except json.JSONDecodeError as error:
             structured = {"error": f"结构化结果不是有效JSON：{error}"}
         structured.update(result_path=str(result_path), result_sha256=file_digest(result_path))
+    stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")
+    if result.returncode and "ModuleNotFoundError: No module named 'processing'" in stderr_text:
+        structured["hint"] = f"Processing初始化入口见：{Path(__file__).resolve().parents[1] / 'integrations/qgis/execution.md'}"
     return {
         "ok": result.returncode == 0 and not changed and "error" not in structured
               and not (isinstance(structured.get("result"), dict) and structured["result"].get("ok") is False),
         "returncode": result.returncode,
         "stdout": stdout_path.read_text(encoding="utf-8", errors="replace")[-2000:] if result.returncode or "result" not in structured else "",
-        "stderr": stderr_path.read_text(encoding="utf-8", errors="replace")[-3000:],
+        "stderr": stderr_text[-3000:],
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
         "script_snapshot": str(snapshot), "script_sha256": script_hash, "script_changed": changed,
@@ -99,6 +108,7 @@ def make_qgis_python_tools(launcher: Path, log_dir: Path, font_files: tuple[Path
                 "读取 GIS 数据元信息。矢量返回字段、三条属性样例、数量、几何类型、"
                 "CRS 和范围；栅格返回尺寸、像元大小、波段、NoData、CRS 和范围。"
                 "多图层容器先返回 layers，再用选定图层的 source 调用本工具。"
+                "批量结果在data.datasets，逐项查看ok；顶层ok只表示批量测量完成。"
                 "不进行完整几何校验或全量数值统计。"
             ),
             parameters={
@@ -117,17 +127,20 @@ def make_qgis_python_tools(launcher: Path, log_dir: Path, font_files: tuple[Path
             name="run_python_script",
             description=(
                 "执行已保存的 .py 脚本，使用独立 QGIS Python 进程。"
-                "需要 PyQGIS 或 Processing 时，由脚本显式初始化。"
+                f"Processing/PyQGIS初始化及清理的正确入口见：{Path(__file__).resolve().parents[1] / 'integrations/qgis/execution.md'}。"
+                "纯GeoPandas/Shapely/Matplotlib脚本不需要QgsApplication。"
                 "工作目录为脚本所在目录，不共享上次执行的变量。"
                 "等待脚本退出，返回退出码、日志尾部和完整日志路径。"
                 "首次用 write_file 保存，修改优先用 edit_file。arguments 可传入脚本参数。"
+                "项目根路径通过GIS_AGENT_PROJECT_ROOT提供，并已加入模块搜索路径，可直接导入项目助手。"
                 "可向环境变量 GIS_AGENT_RESULT_PATH 指定的文件写JSON，返回result；stdout只作日志，不要求末行格式。"
+                "非零退出仍为失败，已写文件只作诊断；不要用os._exit(0)绕过清理。"
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "script_path": {"type": "string"},
-                    "arguments": {"type": "array", "items": {"type": "string"}},
+                    "arguments": {"type": "array", "items": {"type": "string"}, "description": "JSON安全传递的字符串列表，还原为脚本sys.argv[1:]。"},
                 },
                 "required": ["script_path"],
                 "additionalProperties": False,
@@ -135,14 +148,14 @@ def make_qgis_python_tools(launcher: Path, log_dir: Path, font_files: tuple[Path
             function=partial(run_python_script, launcher, log_dir, font_files=font_files),
         ),
         Tool(
-            "summarize_fields", "测量矢量字段的空值、唯一值、数值范围与总量，并返回有限样本。可检查稳定键重复与几何有效性。只提供事实，不决定业务公式。",
+            "summarize_fields", "统计字段空值、非空唯一值、数值范围与总量，可查稳定键和空/无效几何。samples为开头最多5条，不保证非零；duplicate_rows为超出首次出现的行数。返回位于result；ok仅表示测量成功，业务要求需看实际数值。",
             {"type": "object", "properties": {"source": {"type": "string"},
              "fields": {"type": "array", "items": {"type": "string"}}, "key": {"type": "string"},
              "check_geometry": {"type": "boolean"}}, "required": ["source", "fields"], "additionalProperties": False},
             partial(run_data_check, launcher, log_dir, "fields"),
         ),
         Tool(
-            "check_spatial_relation", "按外键定位参照对象，统计缺失键、空几何和不满足指定空间关系的记录，返回有限反例。两层须有相同有效CRS，参照键须唯一；不会自动选择归属规则。",
+            "check_spatial_relation", "按外键核对source几何 relation reference几何，默认intersects。两层须同一有效CRS，参照键须唯一。result返回missing_key、empty_geometry、violations和有限反例。只检查source现存对象，不发现已丢失的源ID，也不决定最优归属。",
             {"type": "object", "properties": {"source": {"type": "string"}, "reference": {"type": "string"},
              "foreign_key": {"type": "string"}, "reference_key": {"type": "string"},
              "relation": {"type": "string", "enum": ["intersects", "within", "contains", "touches"]}},

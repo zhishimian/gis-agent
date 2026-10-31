@@ -1,21 +1,19 @@
 ---
 name: gis-verification
-description: 核查GIS公式、单位、数据身份、空间关联和网络假设，用少量充分事实判断结果。
+description: Check consequential GIS claims before downstream use, including formulas/precision, source identity, spatial assignments, shortest routes, interpolation evaluation, georeferencing and terrain/hydrology. Use when a wrong assumption could propagate or evidence conflicts. Reuse unchanged established evidence; visual styling belongs to gis-cartography and analytical execution to gis-spatial-analysis.
+compatibility: Measurement scripts require GeoPandas/Shapely in a GIS Python interpreter; the precision example requires NumPy. Host tools are optional. Measurement helpers accept a JSON settings file and GIS_AGENT_RESULT_PATH.
 ---
 
-# GIS结果核查
+# GIS verification
 
-先看有效用户要求和实际输入。按错误传播范围选择重难点；通常先查一两个关键假设，有异常再扩大。
-单项算法先检查成果可读、CRS、字段与必要数值。长链在新公式、关联或近似产生后及时检查，避免错误继续进入排名和制图。
+Choose the smallest evidence that can expose a consequential error. Check a new assumption before dependent ranking, selection or plotting; widen coverage when observations disagree. Reuse evidence when inputs and methods are unchanged.
 
-1. 公式写清目标量、分子、分母和单位。用summarize_fields取得真实非零样本，代入计算；人口为零和空值单独解释。排名与归一化不能替代原始量核查。
-2. 连接、合并或拆分前保留稳定业务ID。FID可能重建，不能回指旧对象。用summarize_fields的key检查空值和重复，再用check_spatial_relation核对实际外键归属。
-3. 一对多、跨界和边界接触按用户要求选择规则。工具只测事实，不会自动决定最大面积、中心归属或是否重复计数。
-4. 路网明确吸附到边或顶点、接入距离、方向和代价。不可达单列；需要直线替代时取得用户允许，并区分两类结果。
-5. 总量守恒、范围和几何有效性可以发现异常；它们分别证明有限性质。总量相等仍可能分错对象。复杂问题允许写简短独立计算脚本。
+- Metadata, fields, key duplicates and known foreign-key relations: reuse host inspection tools; exact examples and limitations are in [checks](references/checks.md).
+- Cross-version key coverage or multiplicity: [identity_audit.py](scripts/identity_audit.py).
+- Multipart/hole facts and selected planar distances: [geometry_facts.py](scripts/geometry_facts.py).
+- Numerical precision and claim-specific counterexamples: [checks](references/checks.md#numerical-precision), with [precision_example.py](scripts/precision_example.py).
+- Held-out prediction and terrain/registration evidence: [checks](references/checks.md#prediction-and-terrain-evidence), including a [split counterexample](scripts/validation_split.py).
+- Business formulas, ambiguous matches and network assumptions still need semantic reasoning; a script cannot choose the intended policy.
 
-每项只记录覆盖对象/样本、实际观察、PASS/FAIL/UNKNOWN及工具调用或日志引用。
-ok表示执行状态。失败脚本的部分stdout只用于诊断。证据不足用UNKNOWN，已确认错误用FAIL；修正后重新检查受影响部分。
-最终确认所有要求有对应成果或明确缺口。无需复做完整分析，也无需为简单核查额外写长报告。
-
-PyQGIS脚本初始化和结构化输出见[执行说明](../gis-cartography/execution.md)。
+Record the checked objects, observation, scope and PASS/FAIL/UNKNOWN briefly. A zero exit code proves execution, not the business claim; null measurements leave a gap. Apply task-defined precision at its specified stage, preserve execution errors, and keep sample claims within their coverage.
+Stop when the requirement has sufficient evidence. Extra reports, evidence registration and cross-engine reimplementation are optional. For a necessary custom Processing check, reuse the [shared execution reference](../../integrations/qgis/execution.md).

@@ -21,6 +21,9 @@ def search_catalog(
 )->list[dict[str,str]]:
     if not query.strip() or not 1 <= limit <= 5:
         return []
+    exact = next((key for key in catalog if key.lower() == query.strip().lower()), None)
+    if exact is not None:
+        catalog = {exact: catalog[exact]}
     words=set(re.findall(r"[a-z0-9]+", query.lower()))
     if not words:
         return []
@@ -60,12 +63,10 @@ def make_search_tool(
     return Tool(
         name="search_qgis_tools",
         description=(
-            "Search the QGIS algorithm catalog using short English "
-            "keywords. Translate Chinese requests into English. "
-            "Use an exact algorithm ID when known. limit defaults to 3 (maximum 5). "
-            "Selected candidates become callable on the next response; only tools whose schemas "
-            "are actually provided can be called. Search by exact "
-            "algorithm ID to rediscover a candidate."
+            "用简短英文关键词发现QGIS算法；中文需求先转成英文术语。"
+            "已知准确algorithm_id时按ID查询，只返回该算法；探索默认返回3项，最多5项。"
+            "候选完整Schema在下一次响应提供，可直接调用其tool_name，无需另写初始化脚本。"
+            "已有适用Schema时直接复用，候选不适用时再调整查询。"
         ),
         parameters={
             "type": "object",

@@ -320,10 +320,10 @@ def test_sqlite_resume_protects_version_and_tool_results(tmp_path: Path, count_t
             store, lambda *_: reply("finish", "finish_task", {"status": "completed", "summary": "已完成"}),
             count_tokens, saver, (tool,),
         )
-        agent.graph.update_state(agent.options(), {"version": 78}, as_node="tools")
+        agent.graph.update_state(agent.options(), {"version": 79}, as_node="tools")
         with pytest.raises(ValueError, match="旧版执行流程"):
             agent.resume(store.read_record())
-        agent.graph.update_state(agent.options(), {"version": 79}, as_node="tools")
+        agent.graph.update_state(agent.options(), {"version": 790}, as_node="tools")
         assert agent.resume(store.read_record())["status"] == "completed"
         assert agent.graph.get_state(agent.options()).values["responses_used"] == 2
     assert output.read_text(encoding="utf-8") == "成果\n"
@@ -436,7 +436,8 @@ def test_live_api_qgis_buffer_and_memory(tmp_path: Path, qgis_dir: Path, points:
     try:
         agent = Agent(
             registry, active, partial(load_qgis_tool, qgis, catalog, registry), plan,
-            render_prompt("system.j2", output_dir=tmp_path / "outputs"), real_chat,
+            render_prompt("system.j2", output_dir=tmp_path / "outputs", supports_images=False,
+                          supports_memory=True, skills=application.skill_index()), real_chat,
             session_store, make_context(session_store, ContextConfig(), {tool.name for tool in active}, count_tokens, real_chat),
             memory=memory, memory_turn=turn,
         )

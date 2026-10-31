@@ -34,10 +34,6 @@ def parameter_schema(
                 ensure_ascii=False,
             )
         )
-    if isinstance(type_info, dict):
-        description.extend(
-            type_info.get("acceptable_values", [])
-        )
     if parameter["is_destination"]:
         schema = {"type": "string"}
         description.append(
@@ -121,6 +117,8 @@ def parameter_schema(
             ]
         }
 
+    if isinstance(type_info, dict) and qgis_type in STRING_TYPES and not parameter["is_destination"]:
+        description.extend(type_info.get("acceptable_values", []))
     return {
         **schema,
         "description": "\n".join(description),
@@ -149,6 +147,12 @@ def execute_algorithm(
     /,
     **arguments: Any,
 ) -> dict[str, Any]:
+    allowed = set(definitions) | {"project_path"}
+    unknown = sorted(arguments.keys() - allowed)
+    if unknown:
+        return {"ok": False, "algorithm_id": algorithm_id,
+                "error": f"未知参数：{unknown}。请使用Schema中的原始名称和大小写。",
+                "allowed_parameters": sorted(allowed)}
     for name, parameter in definitions.items():
         if not parameter["is_destination"]:
             continue
@@ -216,6 +220,7 @@ def make_tool(
                 metadata["name"],
                 metadata.get("group"),
                 metadata.get("short_description"),
+                "可直接执行，参数名和类型以本Schema为准。成功outputs映射输出参数到实际成果；不要猜图层名。",
                 *warnings,
                 details.get("help_url"),
             )

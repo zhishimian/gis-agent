@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from gis_agent.core.context import ContextConfig
 from gis_agent.core.memory import MemoryConfig
-from gis_agent.core.model import ModelConfig
+from gis_agent.core.model import DEEPSEEK_MAX_OUTPUT_TOKENS, ModelConfig
 
 
 def configured_path(name: str, default: Path, project: Path) -> Path:
@@ -49,7 +49,9 @@ def configured_model() -> ModelConfig:
     return ModelConfig(
         model=model,
         base_url=os.environ.get("GIS_AGENT_BASE_URL", base_url),
-        max_tokens=int(os.environ.get("GIS_AGENT_MAX_OUTPUT_TOKENS", "8192")),
+        max_tokens=int(os.environ.get(
+            "GIS_AGENT_MAX_OUTPUT_TOKENS", str(DEEPSEEK_MAX_OUTPUT_TOKENS) if deepseek else "8192",
+        )),
         context_window=int(window),
         tokenizer=os.environ.get(
             "GIS_AGENT_TOKENIZER", "deepseek-ai/DeepSeek-V4.1-Flash-1017" if deepseek else "bytes",

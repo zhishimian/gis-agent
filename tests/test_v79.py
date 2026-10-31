@@ -18,9 +18,7 @@ from gis_agent.integrations.qgis.client import QGISClient
 from gis_agent.persistence.evidence import tool_result
 from gis_agent.persistence.sessions import SessionStore
 from gis_agent.tools.base import Tool
-from gis_agent.tools.cartography import render_map
 from gis_agent.tools.files import edit_file, list_files, read_file, search_text
-from gis_agent.tools.images import make_image_tool
 from gis_agent.tools.planning import finish_task
 from gis_agent.tools.qgis_python import inspect_data, run_data_check, run_python_script
 from gis_agent.tools.registry import ToolRegistry
@@ -198,7 +196,7 @@ def test_single_agent_buffer_can_finish_and_read_only_question_can_answer(qgis_d
     calls = []
     def fixed(client, model, view, schemas):
         names = {item["function"]["name"] for item in schemas}
-        assert not {"verify_task", "review_delivery", "cartograph_task"} & names
+        assert not {"verify_task", "review_delivery", "cartograph_task", "render_map"} & names
         assert "gis-verification/SKILL.md" in view[0]["content"]
         name, arguments = next(steps)
         assert name in names
@@ -249,52 +247,3 @@ finally:
     measured = run_python_script(qgis_dir / "bin/python-qgis-ltr.bat", tmp_path / "logs", str(script))
     assert measured["ok"] and measured["result"]["valid"] and measured["result"]["id"] == 1, measured
     assert measured["result"]["area_error"] < 0.0005
-
-
-def test_real_cartography_order_reuse_and_reopen(qgis_dir: Path, tmp_path: Path) -> None:
-    area = geojson(tmp_path / "area.geojson", [({"value": 2}, polygon(0))])
-    point = geojson(tmp_path / "point.geojson", [({"name": "设施"}, {"type": "Point", "coordinates": [5, 5]})])
-    brief = tmp_path / "brief.json"
-    brief.write_text(json.dumps({"question": "设施在哪里", "inputs": [{"source": str(area), "name": "背景"}, {"source": str(point), "name": "设施"}],
-                                 "medium": {"format": ["png", "qgz"]}}, ensure_ascii=False), encoding="utf-8")
-    design = tmp_path / "design.json"
-    design.write_text(json.dumps({"brief": str(brief), "output_dir": str(tmp_path / "map"), "crs": "EPSG:3857"}), encoding="utf-8")
-    launcher = qgis_dir / "bin/python-qgis-ltr.bat"
-    result = render_map(launcher, tmp_path / "logs", (), str(design), "facilities")
-    assert result["ok"], result
-    data = result["result"]
-    assert data["maps"][0]["layers_top_first"] == ["设施", "背景"]
-    image = make_image_tool(tmp_path / "images").run({"path": data["preview"]})
-    assert image["ok"] and image["image"]["width"] == 1800
-    assert render_map(launcher, tmp_path / "logs", (), str(design), "facilities")["reused"]
-    Path(data["preview"]).write_bytes(b"changed")
-    refreshed = render_map(launcher, tmp_path / "logs", (), str(design), "facilities")
-    assert refreshed["ok"] and not refreshed.get("reused"), refreshed
-    script = tmp_path / "reopen.py"
-    script.write_text(f'import sys\nsys.path.insert(0, {str(ROOT / "gis_agent/integrations/qgis")!r})\nfrom cartography_runtime import export_project\nexport_project({str(tmp_path / "map/project.qgz")!r}, {str(tmp_path / "reopened")!r})\nprint("RESULT just a log")\n', encoding="utf-8")
-    reopened = run_python_script(launcher, tmp_path / "logs", str(script))
-    assert reopened["ok"] and reopened["result"]["maps"][0]["layers_top_first"] == ["设施", "背景"], reopened
-    client = QGISClient(qgis_dir / "bin/qgis_process-qgis-ltr.bat")
-    catalog = load_catalog(client)
-    export = load_qgis_tool(client, catalog, ToolRegistry(), "native:printlayouttoimage")
-    assert "project_path" in export.parameters["required"]
-    exported = export.run({"project_path": str(tmp_path / "map/project.qgz"), "LAYOUT": "cartography", "OUTPUT": str(tmp_path / "native.png")})
-    assert exported["ok"] and (tmp_path / "native.png").is_file(), exported
-
-
-def test_choropleth_handles_nulls_and_design_change(qgis_dir: Path, tmp_path: Path) -> None:
-    source = geojson(tmp_path / "areas.geojson", [({"value": 0}, polygon(0)), ({"value": None}, polygon(20)), ({"value": 10}, polygon(40))])
-    brief = tmp_path / "brief.json"
-    brief.write_text(json.dumps({"question": "数值与无数据", "inputs": [{"source": str(source), "field": "value", "unit": "%"}]}), encoding="utf-8")
-    design = tmp_path / "design.json"
-    settings = {"brief": str(brief), "output_dir": str(tmp_path / "map"), "crs": "EPSG:3857", "breaks": [0, 5, 10], "colors": ["#fff7bc", "#d95f0e"]}
-    design.write_text(json.dumps(settings), encoding="utf-8")
-    launcher = qgis_dir / "bin/python-qgis-ltr.bat"
-    first = render_map(launcher, tmp_path / "logs", (), str(design))
-    assert first["ok"], first
-    original = Path(first["result"]["preview"]).read_bytes()
-    settings["colors"] = ["#eff3ff", "#08519c"]
-    design.write_text(json.dumps(settings), encoding="utf-8")
-    changed = render_map(launcher, tmp_path / "logs", (), str(design))
-    assert changed["ok"] and not changed.get("reused"), changed
-    assert Path(changed["result"]["preview"]).read_bytes() != original

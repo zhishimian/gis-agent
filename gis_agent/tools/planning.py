@@ -24,7 +24,8 @@ def finish_task(
     if missing:
         return {"ok": False, "error": "成果路径不存在或未使用绝对路径。", "paths": missing}
     if status == "completed" and unresolved:
-        return {"ok": False, "error": "还有未完成事项，请继续处理或使用 blocked/needs_input 如实结束。"}
+        return {"ok": False, "error": "unresolved非空，不能completed。请处理尚未满足的要求，或用blocked/needs_input结束；正常近似和格式说明写summary。",
+                "unresolved": unresolved}
     return {"ok": True, "status": status, "summary": summary.strip(),
             "artifacts": list(dict.fromkeys(artifacts or [])), "unresolved": unresolved or []}
 
@@ -66,7 +67,8 @@ def make_planning_tools(plan: Plan) -> list[Tool]:
             description=(
                 "报告本轮结束状态和面向用户的说明，必须单独调用。"
                 "completed 表示所需工作已完成，artifacts 列出实际文件或数据集目录。"
-                "unresolved 列出未完成项或未知事项，存在时使用 blocked 或 needs_input。"
+                "unresolved只列影响用户要求成立的未完成或未知事项，存在时使用blocked或needs_input。"
+                "正常数值近似、图层命名和格式说明写summary；实际执行失败需解决或如实停止。"
                 "needs_input 表示需要用户补充信息；blocked 表示执行受阻。"
                 "answer 用于普通问答，可先读取资料；本轮已写入或计算成果时报告任务状态。"
             ),
@@ -74,9 +76,9 @@ def make_planning_tools(plan: Plan) -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "status": {"type": "string", "enum": list(FINISH_STATUSES)},
-                    "summary": {"type": "string"},
+                    "summary": {"type": "string", "description": "简短成果、实际核查范围和正常限制。"},
                     "artifacts": {"type": "array", "items": {"type": "string"}},
-                    "unresolved": {"type": "array", "items": {"type": "string"}},
+                    "unresolved": {"type": "array", "items": {"type": "string"}, "description": "尚未满足或无法确认的用户要求。非空时不能completed。"},
                 },
                 "required": ["status", "summary"],
                 "additionalProperties": False,

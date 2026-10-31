@@ -5,11 +5,12 @@
     "condition": "需要选择专题图类型。",
     "decision": "比例或密度可用面填色；总量优先考察面积对应数值的比例符号；类别使用稳定分类色。",
     "parameters": {
-      "renderer": [
-        "QgsGraduatedSymbolRenderer",
-        "QgsCategorizedSymbolRenderer"
+      "encoding": [
+        "column",
+        "markersize",
+        "categorical"
       ],
-      "proportional_radius": "sqrt(value / reference_value) * reference_radius_mm"
+      "proportional_area": "markersize = value / reference_value * reference_area_pt2"
     },
     "check": "核对字段含义、分母、单位和零值。",
     "limits": "先确认数据语义；面积填色不能把人数自动变为密度。",
@@ -21,13 +22,12 @@
     "condition": "连续量需要离散分类。",
     "decision": "先用业务阈值。没有阈值时按分布比较3～5类候选，保留足以回答问题的层级。",
     "parameters": {
-      "candidate_classes": [
-        3,
-        4,
-        5
-      ],
-      "breaks": "实际递增数值边界",
-      "legend": "真实边界、单位和方法"
+      "breaks": "有限、严格递增且覆盖有效值",
+      "controls": [
+        "BoundaryNorm",
+        "分类计数",
+        "共用色图和图例"
+      ]
     },
     "check": "统计每类数量、空类、临界值和极端值。",
     "limits": "类别数由任务和数据确定；可比面板保持相同边界。",
@@ -39,10 +39,9 @@
     "condition": "需要给数值或类别着色。",
     "decision": "单向数量用顺序色，有科学中心的差值用发散色；类别无虚假顺序；NoData独立表示。",
     "parameters": {
-      "continuous": "QgsGradientColorRamp",
-      "categorical": "QgsCategorizedSymbolRenderer",
-      "nodata": "独立灰色或纹理",
-      "center": "有科学依据时填写"
+      "continuous": "Normalize / TwoSlopeNorm + cmap",
+      "categorical": "稳定类别到颜色映射",
+      "nodata": "独立灰色或纹理"
     },
     "check": "检查顺序、中心、灰度辨识、真实值域与图例。",
     "limits": "类别有既定色义时优先保留，发散中心不能随意设置。",
@@ -54,19 +53,12 @@
     "condition": "主题叠加在道路、地形或行政背景上。",
     "decision": "降低背景竞争，保留支持定位的对象，突出主题。",
     "parameters": {
-      "background_line_mm": [
-        0.1,
-        0.2
-      ],
-      "theme_border_mm": [
-        0.25,
-        0.4
-      ],
       "controls": [
-        "symbol颜色",
-        "setOpacity",
-        "图层顺序"
-      ]
+        "zorder",
+        "alpha",
+        "linewidth"
+      ],
+      "order": "较大zorder位于上方"
     },
     "check": "检查主题区、空白区和必要定位信息。",
     "limits": "数值为A4起点；道路或地形本身是主题时提高其层级。",
@@ -78,14 +70,9 @@
     "condition": "点密集或覆盖在面填色上。",
     "decision": "用少量可解释符号和描边分离设施与背景，避免遮住关键小区域。",
     "parameters": {
-      "marker_mm": [
-        2,
-        2.8
-      ],
-      "stroke_mm": 0.2,
       "controls": [
-        "QgsMarkerSymbol",
-        "空心符号",
+        "markersize / s，单位pt²",
+        "edgecolor",
         "局部图"
       ]
     },
@@ -99,18 +86,14 @@
     "condition": "地名或设施标注拥挤。",
     "decision": "优先用户指定名称和关键对象，次要名称按比例与任务筛选。",
     "parameters": {
+      "controls": [
+        "annotate",
+        "fontsize",
+        "path_effects"
+      ],
       "label_pt": [
         9,
         11
-      ],
-      "buffer_mm": [
-        0.3,
-        0.5
-      ],
-      "controls": [
-        "QgsPalLayerSettings.priority",
-        "QgsRuleBasedLabeling",
-        "QgsTextFormat"
       ]
     },
     "check": "按最终尺寸检查必需标签、碰撞、裁切与halo遮挡。",
@@ -124,11 +107,12 @@
     "decision": "按任务阅读顺序组织主题图例，去掉重复背景项，并放在不遮数据的空间。",
     "parameters": {
       "controls": [
-        "QgsLayoutItemLegend",
-        "setAutoUpdateModel(False)",
-        "图层树"
+        "Patch",
+        "Line2D",
+        "ScalarMappable",
+        "colorbar"
       ],
-      "position": "毫米框坐标，由数据分布决定"
+      "position": "按实际数据分布选择"
     },
     "check": "核对符号、实际分类、单位、NoData及缺失类别。",
     "limits": "右下角仅作候选；数据密集时使用独立栏。",
@@ -138,23 +122,20 @@
     "id": "R08",
     "title": "单页版式",
     "condition": "需要组织地图、标题、图例和说明。",
-    "decision": "先给主图主要空间，再安排必要说明；字体角色与对齐保持一致。",
+    "decision": "按地理范围选择画布，主图承载主要信息。只加任务必需的标题、图例与单位；技术说明放在图外。",
     "parameters": {
-      "margin_mm": 10,
-      "map_width_fraction": 0.7,
-      "font_pt": {
-        "title": 16,
-        "labels": 10,
-        "source": 8
-      },
       "controls": [
-        "QgsPrintLayout",
-        "attemptMove",
-        "attemptResize"
-      ]
+        "figsize",
+        "GridSpec",
+        "subplot_mosaic"
+      ],
+      "font_pt": {
+        "title": 15,
+        "labels": 10
+      }
     },
     "check": "按最终物理尺寸核对文字、留白、阅读顺序和地图形状。",
-    "limits": "这些是A4起点；地理范围决定地图纵横比，期刊尺寸需另设。",
+    "limits": "不预设地图宽度比例或说明面板。最终尺寸与地理范围决定版式。",
     "source": "https://www.nps.gov/subjects/hfc/a-brief-history-of-the-unigrid.htm"
   },
   {
@@ -164,14 +145,14 @@
     "decision": "增加有明确范围关联的局部地图，减少在主图挤放文字。",
     "parameters": {
       "controls": [
-        "QgsLayoutItemMap",
-        "zoomToExtent",
-        "overview框"
+        "inset_axes",
+        "set_xlim / set_ylim",
+        "indicate_inset_zoom"
       ],
       "record": [
-        "局部extent",
-        "比例尺",
-        "地图项id"
+        "显示CRS",
+        "extent",
+        "比例"
       ]
     },
     "check": "核对范围对应、源分辨率、比例和连接关系。",
@@ -187,8 +168,8 @@
       "shared": [
         "CRS",
         "extent",
-        "breaks",
-        "palette"
+        "norm",
+        "cmap"
       ],
       "record": [
         "日期",

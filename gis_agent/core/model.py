@@ -4,13 +4,14 @@ from typing import Any
 
 
 TokenCounter = Callable[[list[dict[str, Any]], list[dict[str, Any]]], int]
+DEEPSEEK_MAX_OUTPUT_TOKENS = 393_216
 
 
 @dataclass(frozen=True)
 class ModelConfig:
     model: str = "deepseek-flash"
     base_url: str = "https://api.deepseek.com"
-    max_tokens: int = 8192
+    max_tokens: int = DEEPSEEK_MAX_OUTPUT_TOKENS
     context_window: int = 1_048_576
     tokenizer: str = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
     provider: str = "deepseek"

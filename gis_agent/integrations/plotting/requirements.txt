@@ -1,0 +1,5 @@
+# QGIS Python中的制图依赖。安装前核对QGIS自带依赖，避免盲目升级。
+matplotlib==3.10.8
+geopandas==1.0.1
+rasterio==1.4.3
+pandas==2.3.0

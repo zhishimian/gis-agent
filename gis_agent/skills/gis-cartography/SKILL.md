@@ -1,27 +1,24 @@
 ---
 name: gis-cartography
-description: 根据读图任务设计、渲染和检查专题地图，优先修复影响理解的真实缺陷。
+description: Design, render, revise and export thematic maps or scientific geographic figures with Matplotlib, GeoPandas and Rasterio. Use for requested map images, choropleths, raster/vector overlays or multi-panel figures. Skip data-only analysis and numeric verification; use gis-spatial-analysis and gis-verification for those. Review images for actual defects without repeating established analysis.
+compatibility: Requires the checkout's plotting helpers plus Matplotlib, GeoPandas and Rasterio in GIS Python. Other hosts must expose the checkout on PYTHONPATH.
 ---
 
-# 专题制图
+# Thematic cartography
 
-先列齐必需图件和格式，确认数据字段含义、单位、CRS及分析结果的核查状态。
-标题只表达证据支持的结论。存在身份或公式问题时先处理数据，记录无法确认的部分。
+Choose content, visual encoding and layout around the reader's geographic question. Reuse completed analysis, actual layers, fields, units and CRS. Execute free Python through the configured GIS interpreter; Matplotlib Agg needs no QgsApplication or Qt.
+Keep uncertain georeferencing or incomplete analytical coverage explicit in the delivery; do not promote a diagnostic candidate to a verified map. Reuse unchanged analytical intermediates and fix display defects without repeating expensive analysis.
+Keep the map focused on geography. Add only necessary titles, legends, units, scale bars, direction cues and place labels. By default, put formulas, CRS/method explanations and technical reports outside the figure; avoid stacked subtitles and explanatory panels. User titles and labels may use any supported language.
 
-按读图问题决定地图类型、范围、分类、色义、主次、标注和版面。人的注意力有限：信息复杂程度由任务需求决定。
-总量、密度、比率和类别使用合适编码。比较图保持范围、单位、色义和分类可比；NoData与零值分开。
-只按当前问题查阅[十条规则](../../assets/cartography/rules.json)中的相关项；需要具体参考时再读[案例](../../assets/cartography/cases.json)。
-目录：R01数据类型、R02分类、R03色义/NoData、R04层级、R05设施点、R06标注、R07图例、R08版面、R09局部放大、R10可比地图。
-可用search_text定位规则ID，再按返回的start读取相关片段。
+Read only what is needed:
 
-优先使用render_map和已有QGIS例程。设计字段见[执行说明](execution.md)。自定义图层或布局继续使用PyQGIS，可复用cartography_runtime。
-图层顺序从最上方到最下方：专题对象、必要边界、背景。选中对象放在全部对象上面。
-set_map_layers(map_item, thematic, background)可分开主题与背景。核对导出结果maps.layers_top_first，避免被不透明填色遮住。
-图例从实际renderer生成，减少手工复制颜色和分类。需要手绘图例时核对它与真实样式是否一致。
+- Vector overlay: [vector_map.py](scripts/vector_map.py).
+- Continuous or classified values: [choropleth.py](scripts/choropleth.py).
+- Raster, vector, inset and statistics: [raster_composite.py](scripts/raster_composite.py).
+- Environment, inputs, outputs and runnable settings: [API](references/api.md).
+- Encoding and layout choices: [design](references/design.md).
+- Fonts, projection and raster failures: [gotchas](references/gotchas.md).
+- Image feedback and stopping: [review](references/review.md).
 
-先完成全部图件的完整草稿。读取当前整图，再按需看图例和密集区域。优先修字段/范围错误、遮挡、缺失元素、文字裁切和难辨符号。
-每次只说明具体缺陷、证据、修改及结果。先定位层序、范围和样式结构，再决定是否换色。
-细小色差或风格偏好不阻挡其他必需图件。没有影响读图的新缺陷时结束；必要修复允许继续，不按固定次数限制。
-
-需要验证保存工程时用export_project重开导出到新目录。render_map或run_python_script返回的结构化result提供真实文件和预览，沿用这些路径交付。
-查看图片只能判断可见信息；单位、人口分配和空间关系由数据核查支撑。
+Use arbitrary Figure/Axes/Artists; examples are editable starting points. Complete required figures before polishing details. Inspect the current whole image, crop only uncertain details, and fix observed displacement, occlusion, encoding or clipping defects together. Stop when no remaining defect changes task interpretation.
+Deliver PNG/SVG/PDF and rerunnable code. For uncertain analytical results consult gis-verification; image appearance alone cannot establish data correctness.

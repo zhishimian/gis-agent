@@ -110,7 +110,7 @@ class Agent:
             self.memory_turn.reset(start)
         self.store.save(messages)
         state: RunState = {
-            'version': 79,
+            'version': 790,
             'turn_start': start, 'model_index': len(messages), 'responses_used': 0,
             'execution_started': False, 'algorithms': [],
             'callable_names': [], 'memory_errors': [], 'handled_sources': [], 'handled_bodies': [],
@@ -123,7 +123,7 @@ class Agent:
         snapshot = self.graph.get_state(self.options())
         if not snapshot.next:
             raise ValueError('没有待续跑的检查点。')
-        if snapshot.values.get('version') != 79:
+        if snapshot.values.get('version') != 790:
             raise ValueError('检查点来自旧版执行流程，请保留原记录，新建会话并提供已有成果路径。')
         self.verify_record(snapshot.values)
         messages[:] = self.store.read_record()
