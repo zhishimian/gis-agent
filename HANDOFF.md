@@ -180,4 +180,4 @@ usage为输入5714137、命中5548672、未命中165465、输出62757、总57768
 
 三个Skills补充插值评价隔离、配准可信度、完整汇水区/分区/淹没区语义、工程地形与水文表面、NoData邻域、计算量和缓存失效。新反例validation_split.py、terrain_counterexamples.py只使用合成数据。不能将离线正确性或description修改称为自然触发率、模型正确率或成本收益。
 
-合并前免费离线50项通过、1个live项排除；针对性7项通过。日志在outputs/v7_finalization_20261031。收官入口docs/v7-finalization.md，V8候选为docs/v8-candidates.md。原生长作业取消/进度、工作流依赖及人工介入本轮仅记录候选。旧实验、试题、Session和大量产物继续本地保留。
+合并前免费离线50项通过、1个live项排除；针对性7项通过。1b5a8cc收拢有效成果后，main快进合并成功，无冲突。合并后再次完整免费回归50项通过、1项排除，110.44秒。未推送远端。日志和最终分支指针在outputs/v7_finalization_20261031，693个历史产物和18项原包/题面哈希未变。收官入口docs/v7-finalization.md，V8候选为docs/v8-candidates.md。原生长作业取消/进度、工作流依赖及人工介入本轮仅记录候选。旧实验、试题、Session和大量产物继续本地保留。V7可以冻结为开发基线，实际模型收益及发布环境仍未验收。
