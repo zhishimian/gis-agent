@@ -11,6 +11,9 @@ from gis_agent.integrations.qgis.client import QGISClient
 from gis_agent.persistence.executions import ExecutionHistory
 from gis_agent.persistence.sessions import SessionStore
 from gis_agent.tools.qgis_python import run_python_script
+from gis_agent.tools.base import Tool
+from gis_agent.persistence.evidence import file_digest
+from functools import partial
 from gis_agent.tools.registry import ToolRegistry
 
 
@@ -111,3 +114,70 @@ def test_plan_validation_and_failed_stage(gis_repair):
                     history.output_root, resolve_tool=registry.get)
     assert result['status'] == 'failed' and result['failed'][0]['step_id'] == 'buffer'
     assert result['pending'] == ['overlay']
+
+
+@pytest.fixture
+def python_repair(tmp_path, qgis_dir):
+    root = tmp_path / 'output'
+    root.mkdir()
+    script = tmp_path / 'monolith.py'
+    prefix = root / 'prefix.txt'
+    data = root / 'intermediate.npy'
+    script.write_text(
+        "import numpy as np,json,sys,os\nfrom pathlib import Path\n"
+        f"if len(sys.argv)==1:\n    Path({str(prefix)!r}).write_text('computed once')\n"
+        f"    np.save({str(data)!r},np.arange(10))\n    raise KeyError('late failure')\n"
+        "job=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
+        "values=np.load(job['inputs']['values'])\n"
+        "result=values['missing']\n"
+        "np.save(job['outputs']['sum'],result)\n"
+        "np.save(job['outputs']['count'],np.array(values.size))\n"
+        "Path(os.environ['GIS_AGENT_RESULT_PATH']).write_text(json.dumps({'outputs':job['outputs']}),encoding='utf-8')\n",
+        encoding='utf-8')
+    history = ExecutionHistory(SessionStore(tmp_path / 'sessions', 'python'), root)
+    tool = Tool('run_python_script', 'Python', {}, partial(run_python_script,
+        qgis_dir / 'bin/python-qgis-ltr.bat', root / 'python_logs'))
+    registry = ToolRegistry()
+    registry.register(tool)
+    source, result = recorded(history, tool, {'script_path': str(script)})
+    assert not result['ok'] and data.is_file()
+    plan = {'repair_id': 'python_fix', 'parent_repair': None, 'reason': 'Reuse persisted prefix',
+            'accepted_inputs': {'values': {'path': str(data)}},
+            'steps': [{'step_id': 'tail', 'source_execution': source,
+                       'inputs': {'values': {'accepted': 'values'}},
+                       'changes': {'job_contract': True, 'side_effects': 'outputs_only', 'deterministic': True,
+                                   'patches': [{'expected_sha256': result['script_sha256'],
+                                                'old_text': "result=values['missing']", 'new_text': 'result=values.sum()'}]},
+                       'outputs': {'sum': 'sum.npy', 'count': 'count.npy'}}], 'targets': ['tail']}
+    return history, registry, plan, script, prefix
+
+
+def test_real_python_patch_reuses_persisted_prefix(python_repair, qgis_dir):
+    history, registry, value, script, prefix = python_repair
+    before = script.read_bytes(), prefix.stat().st_mtime_ns
+    result = replay(RepairPlan.parse(value), history, registry.execute, history.output_root, resolve_tool=registry.get)
+    assert result['ok'], result
+    assert (script.read_bytes(), prefix.stat().st_mtime_ns) == before
+    check = history.output_root / 'check.py'
+    check.write_text("import numpy as np,sys\nassert np.load(sys.argv[1])==45\nassert np.load(sys.argv[2])==10\n", encoding='utf-8')
+    assert run_python_script(qgis_dir / 'bin/python-qgis-ltr.bat', history.output_root / 'python_logs',
+        str(check), list(result['outputs']['tail'].values()))['ok']
+    receipt = json.loads((history.record_dir / (result['execution_refs']['tail'] + '.json')).read_text())
+    frozen = Path(receipt['resolved_call']['arguments']['script_path'])
+    assert frozen != script and 'values.sum()' in frozen.read_text()
+    assert Path(receipt['result']['script_snapshot']).read_bytes() == frozen.read_bytes()
+
+
+@pytest.mark.parametrize('failure', ['hash', 'duplicate', 'dependency'])
+def test_python_patch_failures_do_not_run(python_repair, failure):
+    history, registry, value, script, prefix = python_repair
+    changes = value['steps'][0]['changes']
+    if failure == 'hash':
+        changes['patches'][0]['expected_sha256'] = '0' * 64
+    elif failure == 'duplicate':
+        changes['patches'][0]['old_text'] = 'values'
+    else:
+        changes['dependencies'] = {'helper.py': {'path': str(script), 'expected_sha256': '0' * 64}}
+    with pytest.raises(ReplayError):
+        replay(RepairPlan.parse(value), history, registry.execute, history.output_root, resolve_tool=registry.get)
+    assert not (history.output_root / 'repairs/python_fix/sum.npy').exists()

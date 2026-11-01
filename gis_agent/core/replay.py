@@ -10,6 +10,7 @@ from typing import Any
 from gis_agent.persistence.evidence import file_digest
 from gis_agent.persistence.executions import ExecutionHistory, digest
 from gis_agent.persistence.json import write_json
+from gis_agent.tools.files import edit_file
 
 
 class ReplayError(ValueError):
@@ -191,6 +192,60 @@ def qgis_call(step: ReplayStep, row: dict, tool, bindings: dict, outputs: dict) 
     return arguments
 
 
+def python_code(step: ReplayStep, row: dict, history: ExecutionHistory) -> tuple[bytes, dict[str, bytes]]:
+    changes = step.changes
+    if changes.get('job_contract') is not True or changes.get('side_effects') != 'outputs_only':
+        raise ReplayError('Python 必须明确 job_contract=true、side_effects=outputs_only，并声明所有文件依赖。')
+    if changes.get('patches') and changes.get('candidate_script'):
+        raise ReplayError('补丁和候选脚本互斥。')
+    if changes.get('candidate_script'):
+        source = Path(changes['candidate_script']).resolve()
+        expected = changes.get('expected_sha256')
+    else:
+        if not history.read_resource(row, 'script', limit=512)['ok']:
+            raise ReplayError('历史脚本快照不能核实。')
+        source = Path(row['links']['script_snapshot'])
+        expected = row['links'].get('script_sha256')
+    code = source.read_bytes()
+    if not expected or digest_bytes(code) != expected:
+        raise ReplayError('候选或历史脚本 SHA-256 不匹配。')
+    code.decode('utf-8')
+    helpers = {}
+    for name, reference in changes.get('dependencies', {}).items():
+        local_path(Path('/bundle').resolve(), name)
+        if name == 'script.py' or Path(name).suffix.lower() not in {'.py', '.json', '.csv', '.npy'}:
+            raise ReplayError('辅助依赖必须使用明确的相对文件名，不能覆盖 script.py。')
+        data = Path(reference['path']).read_bytes()
+        if digest_bytes(data) != reference.get('expected_sha256'):
+            raise ReplayError(f'辅助依赖版本不匹配：{name}')
+        helpers[name] = data
+    return code, helpers
+
+
+def digest_bytes(data: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(data).hexdigest()
+
+
+def freeze_python(step: ReplayStep, code: bytes, helpers: dict[str, bytes], root: Path) -> Path:
+    directory = root / 'attempts' / step.step_id
+    directory.mkdir(parents=True)
+    script = directory / 'script.py'
+    script.write_bytes(code)
+    for index, patch in enumerate(step.changes.get('patches', [])):
+        if index == 0 and not patch.get('expected_sha256'):
+            raise ReplayError('首个补丁必须包含 expected_sha256。')
+        result = edit_file(str(script), **patch)
+        if not result['ok']:
+            raise ReplayError(f'补丁失败：{result}')
+    compile(script.read_text(encoding='utf-8'), str(script), 'exec')
+    for name, data in helpers.items():
+        path = local_path(directory, name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return script
+
+
 def replay(plan: RepairPlan, history: ExecutionHistory, execute: Callable, output_dir: Path,
            *, resolve_tool: Callable, environment: dict | None = None) -> dict:
     root = output_dir.resolve() / 'repairs' / plan.repair_id
@@ -206,8 +261,10 @@ def replay(plan: RepairPlan, history: ExecutionHistory, execute: Callable, outpu
         outputs = {name: str(local_path(root, filename)) for name, filename in step.outputs.items()}
         bindings = {name: ('<dependency>' if 'step' in binding else accepted[binding['accepted']]['path'])
                     for name, binding in step.inputs.items()}
-        qgis_call(step, row, tool, bindings, outputs)
-        prepared[step.step_id] = row, tool, outputs
+        code = python_code(step, row, history) if tool.name == 'run_python_script' else None
+        if code is None:
+            qgis_call(step, row, tool, bindings, outputs)
+        prepared[step.step_id] = row, tool, outputs, code
     if root.exists():
         raise ReplayError('修订目录已存在；请使用新 repair_id。')
     root.mkdir(parents=True)
@@ -215,11 +272,17 @@ def replay(plan: RepairPlan, history: ExecutionHistory, execute: Callable, outpu
     report = {'ok': False, 'status': 'failed', 'repair_id': plan.repair_id, 'completed': [], 'reused': [],
               'failed': [], 'pending': [s.step_id for s in ordered], 'outputs': {}, 'execution_refs': {}}
     for index, step in enumerate(ordered):
-        row, tool, outputs = prepared[step.step_id]
+        row, tool, outputs, code = prepared[step.step_id]
         bindings = {name: (report['outputs'][b['step']][b['output']] if 'step' in b else
                            accepted[b['accepted']]['path'] + (f"|layername={accepted[b['accepted']]['layer']}" if accepted[b['accepted']]['layer'] else ''))
                     for name, b in step.inputs.items()}
-        arguments = qgis_call(step, row, tool, bindings, outputs)
+        if code is not None:
+            script = freeze_python(step, *code, root)
+            job = script.parent / 'job.json'
+            write_json(job, {'inputs': bindings, 'parameters': step.changes.get('job_parameters', {}), 'outputs': outputs})
+            arguments = {'script_path': str(script), 'arguments': [str(job)]}
+        else:
+            arguments = qgis_call(step, row, tool, bindings, outputs)
         reference = f'r_{plan.repair_id}_s{index:02d}'
         receipt = history.record_dir / f'{reference}.json'
         record = {'version': 1, 'origin': 'replay_child', 'execution_id': reference,
