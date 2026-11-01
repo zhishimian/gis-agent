@@ -34,6 +34,7 @@ from gis_agent.tools.qgis_python import make_qgis_python_tools
 from gis_agent.tools.registry import ToolRegistry
 from gis_agent.tools.session import make_session_tool
 from gis_agent.tools.history import make_history_tool
+from gis_agent.tools.replay import make_replay_tool
 from gis_agent.tools.base import Tool
 
 
@@ -86,6 +87,16 @@ class AgentFactory:
             tools.append(make_image_tool(store.root / f"{store.session_id}.assets" / "images"))
         if memory is not None:
             tools.extend(make_memory_tools(memory, store, messages, turn))
+        def resolve_replay_tool(name: str) -> Tool:
+            if name not in registry.tools:
+                row = next((row for row in history.rows() if row['tool'] == name and row['integrity'] == 'ok'), None)
+                algorithm = (row or {}).get('facts', {}).get('algorithm_id') or ((row or {}).get('result') or {}).get('algorithm_id')
+                if not algorithm:
+                    raise ValueError('历史工具无法解析为当前算法。')
+                load_qgis_tool(self.qgis, self.catalog, registry, algorithm)
+            return registry.get(name)
+        tools.append(make_replay_tool(history, registry, resolve_replay_tool,
+                                      (self.config.qgis.process_launcher, self.config.qgis.python_launcher)))
         for tool in tools:
             registry.register(tool)
         return Agent(

@@ -327,3 +327,47 @@ def test_tiff_content_and_sidecar_identity(tmp_path, qgis_dir):
     Path(str(raster)+'.aux.xml').write_text('<PAMDataset/>')
     with pytest.raises(ReplayError, match='附属'):
         file_version(str(raster))
+
+
+def test_single_agent_mocktransport_history_repair_and_continue(python_repair, tmp_path):
+    import httpx
+    from openai import OpenAI
+    from langgraph.checkpoint.memory import InMemorySaver
+    from gis_agent.application import AgentFactory
+    from gis_agent.config import AppConfig
+    from gis_agent.integrations.llm import chat, make_token_counter
+    from gis_agent.core.model import ModelConfig
+    history, registry, value, script, prefix = python_repair
+    requests = []
+    expected = [
+        ('execution_history', {'execution_id': value['steps'][0]['source_execution'], 'section': 'detail', 'max_characters': 8000}),
+        ('local_replay', {'plan': value}),
+        ('finish_task', {'status': 'completed', 'summary': 'Repaired the persisted tail.'})]
+    def response(request):
+        requests.append(json.loads(request.content))
+        name, args = expected[len(requests)-1]
+        if name == 'local_replay':
+            assert 'late failure' in json.dumps(requests[-1])
+        if name == 'finish_task':
+            assert 'r_python_fix_s00' in json.dumps(requests[-1])
+        return httpx.Response(200, json={'id': f'test{len(requests)}', 'object': 'chat.completion',
+            'model': 'offline', 'choices': [{'index': 0, 'finish_reason': 'tool_calls', 'message': {
+                'role': 'assistant', 'content': None, 'tool_calls': [{'id': f'c{len(requests)}', 'type': 'function',
+                    'function': {'name': name, 'arguments': json.dumps(args)}}]}}],
+            'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}})
+    config = replace(AppConfig.from_env(Path(__file__).resolve().parents[1]), memory=None,
+                     session_root=history.store.root, output_root=history.output_root.parent,
+                     model=ModelConfig(tokenizer='bytes', supports_images=False, image_tokens=0))
+    messages = [*history.store.load(), {'role': 'user', 'origin': 'user', 'content': 'Fix the late error without recomputing saved inputs.'}]
+    with OpenAI(api_key='offline', max_retries=0, http_client=httpx.Client(transport=httpx.MockTransport(response))) as client:
+        agent = AgentFactory(config, partial(chat, client, config.model), make_token_counter(config.model),
+                             QGISClient(config.qgis.process_launcher), {}).create(
+            history.store, messages, history.output_root, InMemorySaver(), 'Use current evidence to repair.')
+        assert agent.run(messages)['status'] == 'completed'
+    assert len(requests) == 3
+    rows = agent.history.rows()
+    assert any(row['pairing'] == 'replay_child' and row['status'] == 'succeeded' for row in rows)
+    assert prefix.read_text() == 'computed once'
+    results = [row['result'] for row in rows if row['tool'] == 'local_replay']
+    assert results[0]['ok'], results
+    assert len(json.dumps(results[0])) < 4000

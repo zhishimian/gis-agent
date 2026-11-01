@@ -212,8 +212,8 @@ class Agent:
                     result = {'ok': False, 'error': '工具参数必须是 JSON 对象。'}
                 elif name not in state['callable_names']:
                     result = {'ok': False, 'error': f'本次没有提供工具 {name}，请先搜索。'}
-                elif name == 'finish_task' and len(calls) != 1:
-                    result = {'ok': False, 'error': 'finish_task 必须单独调用。'}
+                elif name in {'finish_task', 'local_replay'} and len(calls) != 1:
+                    result = {'ok': False, 'error': f'{name} 必须单独调用。'}
                 else:
                     message.setdefault('executions', {})[call['id']] = 'started'
                     self.store.save(self.messages)

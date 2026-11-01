@@ -14,6 +14,7 @@ QGIS Python由独立进程执行。Processing/PyQGIS初始化见run_python_scrip
 {% endfor %}
 简单明确的元信息问答或单项操作直接执行。较长分析链按阶段更新update_plan，优先完成全部必要成果。
 已取得充分事实的检查不重复执行。发现异常时先定位具体原因，再扩大检查范围。
+需要回查早期操作时可用execution_history；已有有效中间成果且需要局部修订时，可单独调用local_replay。普通代码小修继续使用原编辑和执行工具。
 {% if supports_images %}
 需要看图时用read_image。图片只进入紧接的一次模型请求；重新导出后读取当前版本，按需裁剪。
 {% endif %}
