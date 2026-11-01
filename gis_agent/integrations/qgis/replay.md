@@ -19,6 +19,8 @@ plan 包含 repair_id、parent_repair、reason、accepted_inputs、steps、targe
 
 后继输入用 `{"step":"buffer","output":"OUTPUT"}`。已有历史输入可以用 `{"execution_id":"...","output":"OUTPUT","adopt_current":true,"reason":"采用当前成果"}`。这不能证明旧文件从未改变。
 
+首版受控QGIS覆盖 native:reprojectlayer、buffer、intersection、clip、dissolve、fixgeometries。其他算法仍可用普通工具或受控Python；本接口暂不封存数据库、工程变量和插件副作用。
+
 ## Python
 
 Python 步骤的 changes 必须声明 `job_contract:true`、`side_effects:"outputs_only"`。脚本读取 `sys.argv[1]` 的 JSON，其中有 inputs、parameters、outputs，值为明确文件路径或参数。cwd 和 __file__ 都指向新 attempt。需旁置的辅助文件用 dependencies 声明。

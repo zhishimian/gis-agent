@@ -255,7 +255,7 @@ def test_helper_candidate_and_parameter_cache_invalidation(python_repair):
         assert run(current)['completed'] == ['tail']
 
 
-@pytest.mark.parametrize('fault', ['cycle', 'port', 'collision'])
+@pytest.mark.parametrize('fault', ['cycle', 'port', 'collision', 'reserved'])
 def test_dependency_graph_rejected_before_execution(tmp_path, fault):
     from gis_agent.core.replay import order_steps
     value = {'repair_id': 'graph', 'parent_repair': None, 'reason': 'test', 'accepted_inputs': {},
@@ -266,8 +266,10 @@ def test_dependency_graph_rejected_before_execution(tmp_path, fault):
         value['steps'][0]['inputs'] = {'x': {'step': 'b', 'output': 'x'}}
     elif fault == 'port':
         value['steps'][1]['inputs']['x']['output'] = 'missing'
-    else:
+    elif fault == 'collision':
         value['steps'][1]['outputs']['x'] = 'a.json'
+    else:
+        value['steps'][0]['outputs']['x'] = 'plan.json'
     with pytest.raises(ReplayError):
         order_steps(RepairPlan.parse(value), tmp_path)
 
@@ -371,3 +373,106 @@ def test_single_agent_mocktransport_history_repair_and_continue(python_repair, t
     results = [row['result'] for row in rows if row['tool'] == 'local_replay']
     assert results[0]['ok'], results
     assert len(json.dumps(results[0])) < 4000
+
+
+@pytest.mark.parametrize('window,safe,starts', [('plan', True, 1), ('intent', False, 0),
+    ('output', False, 1), ('child', True, 1), ('root', True, 1), ('session', True, 1)])
+def test_real_subprocess_crash_and_sqlite_reopen(tmp_path, window, safe, starts):
+    import subprocess
+    import sys
+    worker = Path(__file__).with_name('replay_crash_worker.py')
+    crashed = subprocess.run([sys.executable, str(worker), str(tmp_path), window, 'crash'], capture_output=True)
+    assert crashed.returncode != 0, crashed.stdout + crashed.stderr
+    completed = subprocess.run([sys.executable, str(worker), str(tmp_path), window, 'resume'], capture_output=True)
+    assert completed.returncode == 0, completed.stderr.decode(errors='replace')
+    result = json.loads((tmp_path/'resume.json').read_text())
+    assert result['status'] == ('completed' if safe else 'refused'), result
+    actual = (tmp_path/'starts.txt').read_text().splitlines() if (tmp_path/'starts.txt').exists() else []
+    assert len(actual) == starts
+    if safe:
+        assert json.loads((tmp_path/'output/repairs/repair/value.json').read_text()) == {'value': 7}
+        messages = SessionStore(tmp_path/'sessions','crash').load()
+        assert len([m for m in messages if m.get('tool_name')=='local_replay']) == 1
+
+
+def test_recovery_rejects_modified_prefix_and_old_version(tmp_path):
+    import subprocess
+    import sys
+    worker = Path(__file__).with_name('replay_crash_worker.py')
+    assert subprocess.run([sys.executable,str(worker),str(tmp_path),'root','crash'],capture_output=True).returncode != 0
+    store = SessionStore(tmp_path/'sessions','crash')
+    messages = store.read_record()
+    messages[0]['content'] = 'changed original prefix'
+    store.save(messages)
+    result = subprocess.run([sys.executable,str(worker),str(tmp_path),'root','resume'],capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path/'resume.json').read_text())['status'] == 'refused'
+
+
+def test_partial_failure_inherits_completed_prefix(python_repair):
+    history, registry, value, script, prefix = python_repair
+    second = deepcopy(value['steps'][0])
+    second.update(step_id='later', inputs={'values': {'step':'tail','output':'sum'}},
+                  outputs={'sum':'later_sum.npy','count':'later_count.npy'})
+    second['changes']['patches'] = []
+    value['steps'].append(second)
+    value['targets'] = ['later']
+    starts = []
+    def execute(name,args):
+        starts.append(1)
+        return registry.execute(name,args)
+    def run(plan):
+        return replay(RepairPlan.parse(plan),history,execute,history.output_root,
+                      resolve_tool=registry.get,environment={'managed':'test'})
+    failed = run(value)
+    assert failed['status']=='partial' and failed['completed']==['tail'] and len(starts)==2
+    assert run(value)==failed and len(starts)==2
+    fixed = deepcopy(value)
+    fixed.update(repair_id='continued',parent_repair='python_fix')
+    fixed['steps'][1]['changes']['patches'] = deepcopy(value['steps'][0]['changes']['patches'])
+    completed = run(fixed)
+    assert completed['ok'] and completed['reused']==['tail'] and completed['completed']==['later']
+    assert len(starts)==3
+
+
+def test_critical_receipt_failure_is_not_trusted(python_repair,monkeypatch):
+    import gis_agent.core.replay as module
+    history,registry,value,script,prefix=python_repair
+    original=module.write_json
+    def fail(path,data):
+        if path.name.startswith('r_') and data.get('state')=='completed':
+            raise OSError('critical storage unavailable')
+        original(path,data)
+    monkeypatch.setattr(module,'write_json',fail)
+    with pytest.raises(OSError,match='critical'):
+        replay(RepairPlan.parse(value),history,registry.execute,history.output_root,resolve_tool=registry.get)
+    monkeypatch.setattr(module,'write_json',original)
+    result=replay(RepairPlan.parse(value),history,lambda *a: pytest.fail('must not restart'),
+                  history.output_root,resolve_tool=registry.get)
+    assert result['status']=='unknown'
+    assert (history.output_root/'repairs/python_fix/sum.npy').exists()
+
+
+def test_cross_process_repair_lock_is_released_after_termination(tmp_path):
+    import subprocess
+    import sys
+    import time
+    from gis_agent.core.replay import repair_lock
+    marker=tmp_path/'locked.json'
+    program=('from gis_agent.core.replay import repair_lock\nfrom pathlib import Path\nimport time\n'
+             f'with repair_lock(Path({str(tmp_path)!r}),"same"):\n'
+             f'    Path({str(marker)!r}).write_text("held")\n    time.sleep(30)\n')
+    process=subprocess.Popen([sys.executable,'-c',program],cwd=Path(__file__).resolve().parents[1])
+    try:
+        deadline=time.monotonic()+15
+        while not marker.exists() and time.monotonic()<deadline:
+            time.sleep(.05)
+        assert marker.exists()
+        with pytest.raises(ReplayError,match='仍在执行'):
+            with repair_lock(tmp_path,'same'):
+                pytest.fail('concurrent lock acquired')
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+    with repair_lock(tmp_path,'same'):
+        assert marker.read_text()=='held'

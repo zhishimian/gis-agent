@@ -32,7 +32,7 @@ def make_replay_tool(history, registry, resolve_tool, launchers: tuple[Path, ...
             result = replay(parsed, history, registry.execute, history.output_root,
                             resolve_tool=resolve_tool, environment=environment)
             return result | {'preparation_ms': preparation_ms}
-        except (ReplayError, OSError, KeyError, TypeError) as error:
+        except (ValueError, KeyError, TypeError) as error:
             return {'ok': False, 'status': 'needs_revision', 'error': f'{type(error).__name__}: {error}'}
 
     binding = {'type': 'object', 'description': 'One of {accepted:name} or {step:step_id,output:port}.'}

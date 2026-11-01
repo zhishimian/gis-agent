@@ -323,7 +323,8 @@ class ExecutionHistory:
             try:
                 if path.is_symlink():
                     raise ValueError('子回执不能通过链接读取。')
-                record = json.loads(path.read_text(encoding='utf-8'))
+                from gis_agent.core.replay import read_receipt, valid_completion
+                record = read_receipt(path)
                 if record.get('origin') != 'replay_child' or record.get('execution_id') != path.stem:
                     raise ValueError('子回执来源冲突。')
                 call = record['resolved_call']
@@ -331,14 +332,13 @@ class ExecutionHistory:
                 status = {'completed': 'succeeded', 'failed': 'failed'}.get(record['state'], 'unknown')
                 integrity = 'ok'
                 if status == 'succeeded':
-                    from gis_agent.core.replay import validate_outputs
-                    if not validate_outputs(record['output_versions']):
+                    if not valid_completion(record):
                         status, integrity = 'unknown', 'conflict'
                 rows.append({'execution_id': path.stem, 'tool': call['tool'],
                              'arguments': call['arguments'], 'arguments_raw': json_text(call['arguments']),
                              'result': value, 'status': status, 'integrity': integrity, 'pairing': 'replay_child',
                              'sources': {'repair_id': record['repair_id'], 'source_execution': record['source_execution']},
-                             'links': result_links(value), 'facts': self.facts(value, call['arguments']),
+                             'links': result_links(value), 'facts': record.get('facts') or self.facts(value, call['arguments'], record.get('metadata')),
                              'started_at': record.get('started_at'), 'finished_at': record.get('finished_at'),
                              'elapsed_ms': record.get('elapsed_ms'), 'dependency_completeness': 'declared',
                              'error': str((value or {}).get('error') or (value or {}).get('stderr') or '')[-3000:]})

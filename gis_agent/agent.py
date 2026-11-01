@@ -17,6 +17,7 @@ from gis_agent.core.model import ModelReply
 from gis_agent.core.planning import Plan
 from gis_agent.persistence.sessions import SessionStore, message_units
 from gis_agent.persistence.executions import ExecutionHistory, execution_id, record_history
+from gis_agent.persistence.repairs import begin_root, complete_root, recover_root
 from gis_agent.prompts import render_prompt
 from gis_agent.tools.base import Tool
 from gis_agent.tools.registry import ToolRegistry
@@ -113,7 +114,7 @@ class Agent:
             self.memory_turn.reset(start)
         self.store.save(messages)
         state: RunState = {
-            'version': 790,
+            'version': 810,
             'turn_start': start, 'model_index': len(messages), 'responses_used': 0,
             'execution_started': False, 'algorithms': [],
             'callable_names': [], 'memory_errors': [], 'handled_sources': [], 'handled_bodies': [],
@@ -126,9 +127,13 @@ class Agent:
         snapshot = self.graph.get_state(self.options())
         if not snapshot.next:
             raise ValueError('没有待续跑的检查点。')
-        if snapshot.values.get('version') != 790:
+        if snapshot.values.get('version') not in {790, 810}:
             raise ValueError('检查点来自旧版执行流程，请保留原记录，新建会话并提供已有成果路径。')
-        self.verify_record(snapshot.values)
+        if self.record_hash() != snapshot.values['record_hash']:
+            messages[:] = self.store.read_record()
+            if not recover_root(self, snapshot, messages):
+                self.verify_record(snapshot.values)
+            snapshot = self.graph.get_state(self.options())
         messages[:] = self.store.read_record()
         self.messages = messages
         restored = Plan.from_messages(messages)
@@ -202,6 +207,7 @@ class Agent:
         for slot, call in enumerate(calls):
             name = call['function']['name']
             identifier = None
+            repair_root = None
             elapsed_ms = 0.0
             try:
                 arguments = json.loads(call['function']['arguments'])
@@ -214,7 +220,11 @@ class Agent:
                     result = {'ok': False, 'error': f'本次没有提供工具 {name}，请先搜索。'}
                 elif name in {'finish_task', 'local_replay'} and len(calls) != 1:
                     result = {'ok': False, 'error': f'{name} 必须单独调用。'}
+                elif name == 'local_replay' and not isinstance(arguments.get('plan'), dict):
+                    result = {'ok': False, 'error': 'local_replay.plan 必须是 JSON 对象。'}
                 else:
+                    if name == 'local_replay' and self.history is not None:
+                        repair_root = begin_root(self.history, state, self.messages, self.graph.get_state(self.options()))
                     message.setdefault('executions', {})[call['id']] = 'started'
                     self.store.save(self.messages)
                     if self.history is not None:
@@ -255,6 +265,8 @@ class Agent:
             if identifier is not None:
                 stored['execution_id'] = identifier
                 record_history(self.history.complete, identifier, stored, len(self.messages), elapsed_ms, arguments)
+            if repair_root is not None:
+                complete_root(self.history, repair_root, call, stored)
             self.messages.append(stored)
             self.store.save(self.messages)
             logger.info('工具 %s：%s', name, stored['content'][:1200])
