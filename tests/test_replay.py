@@ -314,11 +314,11 @@ def test_tiff_content_and_sidecar_identity(tmp_path, qgis_dir):
     script.write_text("from osgeo import gdal,osr\nimport sys\np=sys.argv[1]\n"
         "d=gdal.GetDriverByName('GTiff').Create(p,3,3,1,gdal.GDT_Float32)\n"
         "s=osr.SpatialReference();s.ImportFromEPSG(int(sys.argv[2]));d.SetProjection(s.ExportToWkt())\n"
-        "d.SetGeoTransform([0,10,0,30,0,-10]);d.GetRasterBand(1).SetNoDataValue(float(sys.argv[3]))\n"
+        "pixel=float(sys.argv[4]);d.SetGeoTransform([0,pixel,0,30,0,-pixel]);d.GetRasterBand(1).SetNoDataValue(float(sys.argv[3]))\n"
         "d.GetRasterBand(1).Fill(4);d=None\n", encoding='utf-8')
-    def create(crs, nodata):
+    def create(crs, nodata, pixel=10):
         assert run_python_script(qgis_dir/'bin/python-qgis-ltr.bat', tmp_path/'python_logs', str(script),
-                                 [str(raster), str(crs), str(nodata)])['ok']
+                                 [str(raster), str(crs), str(nodata), str(pixel)])['ok']
     create(32650, -9999)
     original = file_version(str(raster))
     create(32649, -9999)
@@ -326,6 +326,9 @@ def test_tiff_content_and_sidecar_identity(tmp_path, qgis_dir):
     changed = file_version(str(raster))
     create(32649, -999)
     assert not same_version(changed)
+    grid = file_version(str(raster))
+    create(32649, -999, 20)
+    assert not same_version(grid)
     Path(str(raster)+'.aux.xml').write_text('<PAMDataset/>')
     with pytest.raises(ReplayError, match='附属'):
         file_version(str(raster))
@@ -476,3 +479,51 @@ def test_cross_process_repair_lock_is_released_after_termination(tmp_path):
         process.wait(timeout=10)
     with repair_lock(tmp_path,'same'):
         assert marker.read_text()=='held'
+
+
+def test_optional_replay_preserves_ordinary_qgis_responses(gis_repair,tmp_path):
+    from langgraph.checkpoint.memory import InMemorySaver
+    from gis_agent.application import AgentFactory
+    from gis_agent.config import AppConfig
+    from gis_agent.integrations.llm import make_token_counter
+    from gis_agent.core.model import ModelConfig
+    from test_acceptance import reply
+    old,registry,starts,plan=gis_repair
+    measured=[]
+    counts=[]
+    config=replace(AppConfig.from_env(Path(__file__).resolve().parents[1]),memory=None,
+                   model=ModelConfig(tokenizer='bytes',supports_images=False,image_tokens=0))
+    for enabled in (False,True):
+        store=SessionStore(tmp_path/'control',f'ordinary{enabled}')
+        output=tmp_path/f'ordinary{enabled}.gpkg'
+        tool=registry.get('qgis_native_buffer')
+        replies=iter([reply('buffer',tool.name,{'INPUT':str(old.output_root/'projected.gpkg'),
+            'DISTANCE':500,'SEGMENTS':32,'OUTPUT':str(output)}),
+            reply('finish','finish_task',{'status':'completed','summary':'Done'})])
+        agent=AgentFactory(config,lambda *_:next(replies),make_token_counter(config.model),
+                           QGISClient(config.qgis.process_launcher),{}).create(
+            store,[],tmp_path/f'outputs{enabled}',InMemorySaver(),'Perform the operation',extra_tools=[tool])
+        if not enabled:
+            agent.base_tools=[t for t in agent.base_tools if t.name!='local_replay']
+            del agent.registry.tools['local_replay']
+        before=len(starts)
+        assert agent.run([{'role':'user','origin':'user','content':'Create 500m buffer'}])['status']=='completed'
+        counts.append((agent.graph.get_state(agent.options()).values['responses_used'],len(starts)-before))
+        measured.append(features(output))
+    assert counts==[(2,1),(2,1)] and measured[0]==measured[1]
+
+
+def test_controlled_python_output_can_feed_new_tail(python_repair):
+    history,registry,value,script,prefix=python_repair
+    first=replay(RepairPlan.parse(value),history,registry.execute,history.output_root,
+                 resolve_tool=registry.get,environment={'managed':'test'})
+    assert first['ok']
+    next_plan=deepcopy(value)
+    next_plan.update(repair_id='new_tail',parent_repair='python_fix')
+    next_plan['accepted_inputs']={'values':{'execution_id':first['execution_refs']['tail'],'output':'sum'}}
+    result=replay(RepairPlan.parse(next_plan),history,registry.execute,history.output_root,
+                  resolve_tool=registry.get,environment={'managed':'test'})
+    assert result['ok'] and result['completed']==['tail'],result
+    from gis_agent.core.replay import read_receipt
+    accepted=read_receipt(history.output_root/'repairs/new_tail/inputs.json')
+    assert accepted['values']['historical_identity']=='verified_controlled'

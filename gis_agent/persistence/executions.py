@@ -338,6 +338,7 @@ class ExecutionHistory:
                              'arguments': call['arguments'], 'arguments_raw': json_text(call['arguments']),
                              'result': value, 'status': status, 'integrity': integrity, 'pairing': 'replay_child',
                              'sources': {'repair_id': record['repair_id'], 'source_execution': record['source_execution']},
+                             'controlled_outputs': record.get('output_versions', {}),
                              'links': result_links(value), 'facts': record.get('facts') or self.facts(value, call['arguments'], record.get('metadata')),
                              'started_at': record.get('started_at'), 'finished_at': record.get('finished_at'),
                              'elapsed_ms': record.get('elapsed_ms'), 'dependency_completeness': 'declared',

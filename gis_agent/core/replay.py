@@ -231,18 +231,28 @@ def sources(history: ExecutionHistory) -> dict[str, dict]:
 def accept_inputs(plan: RepairPlan, rows: dict) -> dict:
     result = {}
     for name, reference in plan.accepted_inputs.items():
+        historical_identity = 'unverified'
         path = reference.get('path')
         if 'execution_id' in reference:
             row = rows.get(reference['execution_id'])
             if not row or row['integrity'] != 'ok' or row['status'] != 'succeeded':
                 raise ReplayError('采用的历史输入没有可信成功结果。')
-            path = (row['result'].get('outputs') or {}).get(reference.get('output'))
-            if reference.get('adopt_current') is not True or not reference.get('reason'):
-                raise ReplayError('旧输入必须明确 adopt_current 并说明采用理由。')
+            controlled = row.get('controlled_outputs', {}).get(reference.get('output'))
+            if controlled:
+                if not same_version(controlled):
+                    raise ReplayError('受控历史输入已经变化。')
+                path = controlled['path']
+                historical_identity = 'verified_controlled'
+            else:
+                value = row['result']
+                outputs = value.get('outputs') or (value.get('result') or {}).get('outputs') or {}
+                path = outputs.get(reference.get('output'))
+                if reference.get('adopt_current') is not True or not reference.get('reason'):
+                    raise ReplayError('旧输入必须明确 adopt_current 并说明采用理由。')
         if not path or '://' in path or '|' in path:
             raise ReplayError('首版只接受本地文件；图层用 layer 选择器。')
         result[name] = file_version(path) | {'layer': reference.get('layer'),
-                                           'historical_identity': 'unverified', 'level': 'declared'}
+                                           'historical_identity': historical_identity, 'level': 'declared'}
     return result
 
 

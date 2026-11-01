@@ -22,6 +22,10 @@ def make_replay_tool(history, registry, resolve_tool, launchers: tuple[Path, ...
                 if not measured.get('ok'):
                     return {'ok': False, 'status': 'needs_revision', 'error': '无法确认受控执行环境。', 'diagnostic': measured}
                 files = [*measured['result']['files'], *(str(path) for path in launchers),
+                         str(probe), str(Path(__file__).resolve()),
+                         str(Path(__file__).with_name('qgis_python.py')),
+                         str(Path(__file__).with_name('registry.py')), str(Path(__file__).with_name('base.py')),
+                         str(Path(__file__).resolve().parents[1] / 'integrations/qgis/adapter.py'),
                          str(Path(__file__).resolve().parents[1] / 'integrations/qgis/python_runtime.py'),
                          str(Path(__file__).resolve().parents[1] / 'integrations/qgis/script_entry.py')]
                 watched = {path: file_digest(Path(path)) for path in files}
