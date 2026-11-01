@@ -255,6 +255,7 @@ def make_tool(
             "parameters": {name: {
                 "type": parameter["type"].get("id") if isinstance(parameter["type"], dict) else parameter["type"],
                 "destination": parameter["is_destination"],
+                "default": parameter.get("default_value"),
             } for name, parameter in definitions.items()},
         },
     )
