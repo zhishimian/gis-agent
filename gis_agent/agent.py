@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+from time import perf_counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
@@ -15,6 +16,7 @@ from gis_agent.core.memory import MemoryStore, MemoryTurn, extract_memories
 from gis_agent.core.model import ModelReply
 from gis_agent.core.planning import Plan
 from gis_agent.persistence.sessions import SessionStore, message_units
+from gis_agent.persistence.executions import ExecutionHistory, execution_id, record_history
 from gis_agent.prompts import render_prompt
 from gis_agent.tools.base import Tool
 from gis_agent.tools.registry import ToolRegistry
@@ -59,6 +61,7 @@ class Agent:
     memory: MemoryStore | None = None
     memory_turn: MemoryTurn | None = None
     checkpointer: BaseCheckpointSaver | None = None
+    history: ExecutionHistory | None = None
     graph: Any = field(init=False, repr=False)
     messages: list[dict[str, Any]] = field(init=False, repr=False)
 
@@ -196,8 +199,10 @@ class Agent:
         if not calls:
             self.messages.append({'role': 'user', 'origin': 'program', 'content': render_prompt('continue.txt')})
             self.store.save(self.messages)
-        for call in calls:
+        for slot, call in enumerate(calls):
             name = call['function']['name']
+            identifier = None
+            elapsed_ms = 0.0
             try:
                 arguments = json.loads(call['function']['arguments'])
             except json.JSONDecodeError as error:
@@ -212,9 +217,19 @@ class Agent:
                 else:
                     message.setdefault('executions', {})[call['id']] = 'started'
                     self.store.save(self.messages)
+                    if self.history is not None:
+                        identifier = execution_id(state['model_index'], slot)
+                        record_history(self.history.begin, state['model_index'], slot, call)
                     if name not in PASSIVE_TOOLS:
                         state['execution_started'] = True
-                    result = self.registry.execute(name, arguments)
+                    started = perf_counter()
+                    try:
+                        result = self.registry.execute(name, arguments)
+                    except Exception as error:
+                        if identifier is not None:
+                            record_history(self.history.raised, identifier, error, (perf_counter() - started) * 1000)
+                        raise
+                    elapsed_ms = (perf_counter() - started) * 1000
                     if name == 'search_qgis_tools' and isinstance(result, list):
                         algorithms = list(state['algorithms'])
                         for item in result:
@@ -236,6 +251,9 @@ class Agent:
                     errors.add(name)
                 state['memory_errors'] = sorted(errors)
             stored = self.store.tool_message(call['id'], name, result, self.context.config.tool_limit)
+            if identifier is not None:
+                stored['execution_id'] = identifier
+                record_history(self.history.complete, identifier, stored, len(self.messages), elapsed_ms)
             self.messages.append(stored)
             self.store.save(self.messages)
             logger.info('工具 %s：%s', name, stored['content'][:1200])
