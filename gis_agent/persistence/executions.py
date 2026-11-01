@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from gis_agent.persistence.evidence import tool_result
+from gis_agent.persistence.evidence import file_digest, tool_result
 from gis_agent.persistence.json import json_text, write_json
 from gis_agent.persistence.sessions import SessionStore
 
@@ -59,6 +59,85 @@ def result_links(value: Any) -> dict[str, Any]:
 @dataclass
 class ExecutionHistory:
     store: SessionStore
+    output_dir: Path | None = None
+
+    @property
+    def output_root(self) -> Path:
+        return (self.output_dir or self.store.root.parent / "outputs" / self.store.session_id).resolve()
+
+    def read_result(self, message: dict) -> Any:
+        if "asset" in message:
+            path = self.store.asset_path(message["asset"])
+            if not path.is_relative_to(self.store.root / f"{self.store.session_id}.assets" / "tool_results"):
+                raise ValueError("工具资产经过链接跳出了当前 Session。")
+        return tool_result(self.store, message)
+
+    def facts(self, value: Any, arguments: Any, metadata: dict | None = None) -> dict:
+        facts: dict[str, Any] = {"dependency_completeness": "unknown", "inputs": [], "outputs": []}
+        if not isinstance(value, dict):
+            return facts
+        arguments = arguments if isinstance(arguments, dict) else {}
+        if metadata:
+            facts["algorithm_id"] = metadata["algorithm_id"]
+            facts["definition_sha256"] = metadata["definition_sha256"]
+            facts["omitted_parameters"] = sorted(metadata["parameters"].keys() - arguments.keys())
+            for name, definition in metadata["parameters"].items():
+                if not definition["destination"] and name in arguments and definition["type"] in {
+                    "source", "vector", "raster", "maplayer", "multilayer", "file",
+                }:
+                    facts["inputs"].append({"parameter": name, "source": arguments[name], "identity_strength": "reference_only"})
+        outputs = value.get("outputs")
+        if not isinstance(outputs, dict) and isinstance(value.get("result"), dict):
+            outputs = value["result"].get("outputs", value["result"])
+        if isinstance(outputs, dict):
+            for name, source in outputs.items():
+                if not isinstance(source, str) or not Path(source.split("|", 1)[0]).is_absolute():
+                    continue
+                item = {"parameter": name, "source": source, "identity_strength": "reported_reference"}
+                path = Path(source.split("|", 1)[0]).resolve()
+                if path.is_relative_to(self.output_root):
+                    item["observed_at"] = datetime.now(timezone.utc).isoformat()
+                    item["exists"] = path.is_file()
+                    if item["exists"]:
+                        stat = path.stat()
+                        item.update(size=stat.st_size, mtime_ns=stat.st_mtime_ns, identity_strength="stat_only")
+                facts["outputs"].append(item)
+        if value.get("script_snapshot"):
+            facts["script"] = {"path": arguments.get("script_path"), "snapshot": value["script_snapshot"],
+                               "sha256": value.get("script_sha256"), "execution_mode": "original_path",
+                               "script_changed": value.get("script_changed"), "actual_code_identity": "not_proven"}
+            request = Path(value["script_snapshot"]).parent / "request.json"
+            if request.resolve().is_relative_to(self.output_root / "python_logs") and request.is_file():
+                facts["request"] = {"path": str(request), "sha256": file_digest(request),
+                                    "observed_at": datetime.now(timezone.utc).isoformat()}
+        return facts
+
+    def read_resource(self, row: dict, section: str, cursor: int = 0, limit: int = 4000) -> dict:
+        resources = {
+            "script": ("script_snapshot", "script_sha256", "script.py"),
+            "stdout": ("stdout_path", "stdout_sha256", "stdout.txt"),
+            "stderr": ("stderr_path", "stderr_sha256", "stderr.txt"),
+        }
+        if section == "request":
+            reference = row.get("facts", {}).get("request", {})
+            location, expected, filename = reference.get("path"), reference.get("sha256"), "request.json"
+        else:
+            path_key, hash_key, filename = resources[section]
+            location, expected = row["links"].get(path_key), row["links"].get(hash_key)
+        if not location:
+            return {"ok": False, "error": "该执行没有对应资源引用。"}
+        path = Path(location).resolve()
+        if not path.is_relative_to(self.output_root / "python_logs") or path.name != filename:
+            return {"ok": False, "error": "资源超出当前 Session 的 Python 日志范围。"}
+        try:
+            if expected is None or file_digest(path) != expected:
+                raise ValueError("资源缺少内容指纹或校验失败。")
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError, ValueError) as error:
+            return {"ok": False, "error": str(error)}
+        end = min(cursor + limit, len(text))
+        return {"ok": True, "path": str(path), "sha256": expected, "text": text[cursor:end],
+                "total_characters": len(text), "next_cursor": end if end < len(text) else None}
 
     @property
     def record_dir(self) -> Path:
@@ -86,16 +165,18 @@ class ExecutionHistory:
             "metadata": metadata,
         })
 
-    def complete(self, identifier: str, message: dict, message_index: int, elapsed_ms: float) -> None:
+    def complete(self, identifier: str, message: dict, message_index: int, elapsed_ms: float,
+                 arguments: dict | None = None) -> None:
         path = self.record_path(identifier)
         record = json.loads(path.read_text(encoding="utf-8"))
         if record["state"] != "started":
             if record.get("message_sha256") != digest(message):
                 raise ValueError("已完成回执与本次结果冲突。")
             return
-        value = tool_result(self.store, message)
+        value = self.read_result(message)
         record.update(state=result_status(value), finished_at=datetime.now(timezone.utc).isoformat(),
                       elapsed_ms=elapsed_ms, message_index=message_index, message_sha256=digest(message))
+        record["facts"] = self.facts(value, arguments, record.get("metadata"))
         if len(json_text(message)) <= 16000:
             record["completion_message"] = message
         write_json(path, record)
@@ -126,6 +207,8 @@ class ExecutionHistory:
                     raise ValueError("回执与 Session 工具结果不匹配。")
             row.update({key: record[key] for key in ("started_at", "finished_at", "elapsed_ms")})
             row["recorded_state"] = record["state"]
+            if "facts" in record:
+                row["facts"] = record["facts"]
             if message is None:
                 if record["state"] == "raised":
                     row.update(status="raised", error=record["error"])
@@ -136,7 +219,7 @@ class ExecutionHistory:
                             or completion.get("tool_call_id") != call.get("id")
                             or completion.get("tool_name") != row["tool"]):
                         raise ValueError("孤立完成消息的来源不匹配。")
-                    value = tool_result(self.store, completion)
+                    value = self.read_result(completion)
                     row.update(result=value, links=result_links(value), pairing="orphan")
         except (OSError, ValueError, KeyError, TypeError) as error:
             row.update(status="unknown", integrity="conflict", error=str(error))
@@ -185,7 +268,7 @@ class ExecutionHistory:
                         if (item.get("tool_name", row["tool"]) != row["tool"]
                                 or item.get("execution_id", row["execution_id"]) != row["execution_id"]):
                             raise ValueError("工具结果的执行来源不匹配。")
-                        value = tool_result(self.store, item)
+                        value = self.read_result(item)
                     except (OSError, ValueError, KeyError, TypeError) as error:
                         row.update(integrity="corrupt", error=str(error))
                     else:
@@ -199,6 +282,8 @@ class ExecutionHistory:
                         self.merge_record(row, call, matched[0][1] if matched else None)
                     except (OSError, ValueError, KeyError, TypeError) as error:
                         row.update(status="unknown", integrity="conflict", error=str(error))
+                if "facts" not in row:
+                    row["facts"] = self.facts(row["result"], row["arguments"])
                 rows.append(row)
         previous = {}
         for row in rows:

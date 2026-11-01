@@ -219,7 +219,8 @@ class Agent:
                     self.store.save(self.messages)
                     if self.history is not None:
                         identifier = execution_id(state['model_index'], slot)
-                        record_history(self.history.begin, state['model_index'], slot, call)
+                        record_history(self.history.begin, state['model_index'], slot, call,
+                                       self.registry.get(name).execution_metadata)
                     if name not in PASSIVE_TOOLS:
                         state['execution_started'] = True
                     started = perf_counter()
@@ -253,7 +254,7 @@ class Agent:
             stored = self.store.tool_message(call['id'], name, result, self.context.config.tool_limit)
             if identifier is not None:
                 stored['execution_id'] = identifier
-                record_history(self.history.complete, identifier, stored, len(self.messages), elapsed_ms)
+                record_history(self.history.complete, identifier, stored, len(self.messages), elapsed_ms, arguments)
             self.messages.append(stored)
             self.store.save(self.messages)
             logger.info('工具 %s：%s', name, stored['content'][:1200])

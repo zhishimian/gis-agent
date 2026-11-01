@@ -191,3 +191,86 @@ def test_truncated_calls_never_produce_receipts(tmp_path: Path) -> None:
     agent.history = ExecutionHistory(store)
     assert agent.run([{"role": "user", "origin": "user", "content": "执行"}])["status"] == "blocked"
     assert not count and not agent.history.record_dir.exists()
+
+
+def test_real_qgis_metadata_and_enabled_disabled_equivalence(tmp_path: Path, qgis_dir: Path) -> None:
+    from dataclasses import replace
+    from test_acceptance import make_graph_agent, reply
+    from gis_agent.integrations.qgis.adapter import make_tool
+    from gis_agent.integrations.qgis.client import QGISClient
+    from gis_agent.tools.qgis_python import inspect_data
+    source = tmp_path / "point.geojson"
+    source.write_text(json.dumps({"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": "EPSG:3857"}},
+        "features": [{"type": "Feature", "properties": {"id": 7}, "geometry": {"type": "Point", "coordinates": [0, 0]}}]}), encoding="utf-8")
+    client = QGISClient(qgis_dir / "bin/qgis_process-qgis-ltr.bat")
+    documentation = client.query("help", "native:buffer")
+    tool = make_tool("native:buffer", {"name": "buffer"}, documentation, client)
+    assert tool.schema() == replace(tool, execution_metadata=None).schema()
+    measurements, counts = [], []
+    for enabled in (False, True):
+        output = tmp_path / str(enabled) / "result.gpkg"
+        store = SessionStore(tmp_path / "sessions", f"qgis_{enabled}")
+        history = ExecutionHistory(store, output.parent)
+        calls = []
+        original = tool.function
+        def execute(**kwargs):
+            calls.append(1)
+            return original(**kwargs)
+        active = replace(tool, function=execute)
+        arguments = {"INPUT": str(source), "DISTANCE": 500, "SEGMENTS": 32, "OUTPUT": str(output)}
+        replies = iter([reply("buffer", active.name, arguments), reply("finish", "finish_task", {"status": "completed", "summary": "完成"})])
+        agent = make_graph_agent(store, lambda *_: next(replies), make_token_counter(ModelConfig(tokenizer="bytes")), InMemorySaver(), (active,))
+        agent.history = history if enabled else None
+        assert agent.run([{"role": "user", "origin": "user", "content": "缓冲"}])["status"] == "completed"
+        counts.append((len(calls), agent.graph.get_state(agent.options()).values["responses_used"]))
+        measured = inspect_data(qgis_dir / "bin/python-qgis-ltr.bat", tmp_path / "measurement_logs", str(output))["data"]
+        measurements.append({key: measured[key] for key in ("crs", "extent", "feature_count", "fields")})
+        if enabled:
+            row = history.rows()[0]
+            facts = row["facts"]
+            assert facts["algorithm_id"] == "native:buffer" and facts["definition_sha256"]
+            assert facts["inputs"][0]["source"] == str(source)
+            assert facts["outputs"][0]["exists"] and "sha256" not in facts["outputs"][0]
+            assert row["arguments"]["DISTANCE"] == 500
+    assert counts == [(1, 2), (1, 2)] and measurements[0] == measurements[1]
+
+
+def test_real_python_snapshot_request_raster_and_resource_scope(tmp_path: Path, qgis_dir: Path) -> None:
+    from gis_agent.tools.qgis_python import run_python_script
+    output = tmp_path / "outputs" / "python"
+    output.mkdir(parents=True)
+    script = tmp_path / "make.py"
+    script.write_text(
+        "import os,json,sys\nfrom osgeo import gdal\n"
+        "d=gdal.GetDriverByName('GTiff').Create(sys.argv[1],2,2,1,gdal.GDT_Byte)\n"
+        "d.GetRasterBand(1).Fill(7)\nd=None\n"
+        "print('actual log')\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['GIS_AGENT_RESULT_PATH']).write_text(json.dumps({'outputs':{'raster':sys.argv[1],'missing':sys.argv[2]}}),encoding='utf-8')\n",
+        encoding="utf-8")
+    arguments = {"script_path": str(script), "arguments": [str(output / "small.tif"), str(output / "missing.tif")]}
+    source = call("run_python_script", arguments)
+    store = SessionStore(tmp_path / "sessions", "python")
+    store.save([assistant(source)])
+    history = ExecutionHistory(store, output)
+    history.begin(0, 0, source)
+    result = run_python_script(qgis_dir / "bin/python-qgis-ltr.bat", output / "python_logs", **arguments)
+    assert result["ok"], result
+    message = store.tool_message("repeated", "run_python_script", result, 8000)
+    history.complete("e000000_00", message, 1, 1, arguments)
+    store.save([assistant(source), message])
+    row = history.rows()[0]
+    assert row["facts"]["script"]["actual_code_identity"] == "not_proven"
+    assert [item["exists"] for item in row["facts"]["outputs"]] == [True, False]
+    assert json.loads(history.read_resource(row, "request")["text"])["arguments"] == arguments["arguments"]
+    original = history.read_resource(row, "script")["text"]
+    script.write_text("changed", encoding="utf-8")
+    assert history.read_resource(history.rows()[0], "script")["text"] == original
+    assert "actual log" in history.read_resource(row, "stdout")["text"]
+    secret = tmp_path / "secret.env"
+    secret.write_text("secret content", encoding="utf-8")
+    row["links"]["script_snapshot"] = str(secret)
+    assert not history.read_resource(row, "script")["ok"]
+    row["links"]["script_snapshot"] = result["script_snapshot"]
+    Path(result["script_snapshot"]).write_text("tampered", encoding="utf-8")
+    assert not history.read_resource(row, "script")["ok"]

@@ -249,6 +249,14 @@ def make_tool(
             algorithm_id,
             definitions,
         ),
+        execution_metadata={
+            "algorithm_id": algorithm_id,
+            "definition_sha256": hashlib.sha256(json.dumps(definitions, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
+            "parameters": {name: {
+                "type": parameter["type"].get("id") if isinstance(parameter["type"], dict) else parameter["type"],
+                "destination": parameter["is_destination"],
+            } for name, parameter in definitions.items()},
+        },
     )
 
 def load_qgis_tool(
