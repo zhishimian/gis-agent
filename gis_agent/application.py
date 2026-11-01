@@ -22,6 +22,7 @@ from gis_agent.integrations.qgis.adapter import load_qgis_tool
 from gis_agent.integrations.qgis.catalog import load_catalog, make_search_tool
 from gis_agent.integrations.qgis.client import QGISClient
 from gis_agent.persistence.sessions import SessionStore
+from gis_agent.persistence.executions import ExecutionHistory
 from gis_agent.prompts import render_prompt
 from gis_agent.tools.builtin import builtin_tools
 from gis_agent.skills import skill_index
@@ -32,6 +33,7 @@ from gis_agent.tools.planning import make_planning_tools
 from gis_agent.tools.qgis_python import make_qgis_python_tools
 from gis_agent.tools.registry import ToolRegistry
 from gis_agent.tools.session import make_session_tool
+from gis_agent.tools.history import make_history_tool
 from gis_agent.tools.base import Tool
 
 
@@ -70,6 +72,7 @@ class AgentFactory:
     ) -> Agent:
         plan = Plan.from_messages(messages)
         registry = ToolRegistry()
+        history = ExecutionHistory(store, output_dir)
         planning = make_planning_tools(plan)
         tools = [
             *builtin_tools, *file_tools, make_search_tool(self.catalog),
@@ -77,7 +80,7 @@ class AgentFactory:
                 self.config.qgis.python_launcher,
                 output_dir / "python_logs", self.config.qgis.font_files,
             ),
-            *planning, make_session_tool(store), *(extra_tools or []),
+            *planning, make_session_tool(store), make_history_tool(history), *(extra_tools or []),
         ]
         if self.config.model.supports_images:
             tools.append(make_image_tool(store.root / f"{store.session_id}.assets" / "images"))
@@ -94,7 +97,7 @@ class AgentFactory:
                 AuxiliaryCalls(self.call, store.record_model_call, self.count_tokens, self.config.context.request_token_limit),
                 {tool.name for tool in tools},
             ),
-            memory=memory, memory_turn=turn, checkpointer=saver,
+            memory=memory, memory_turn=turn, checkpointer=saver, history=history,
         )
 
 

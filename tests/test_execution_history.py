@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -224,7 +225,10 @@ def test_real_qgis_metadata_and_enabled_disabled_equivalence(tmp_path: Path, qgi
         assert agent.run([{"role": "user", "origin": "user", "content": "缓冲"}])["status"] == "completed"
         counts.append((len(calls), agent.graph.get_state(agent.options()).values["responses_used"]))
         measured = inspect_data(qgis_dir / "bin/python-qgis-ltr.bat", tmp_path / "measurement_logs", str(output))["data"]
-        measurements.append({key: measured[key] for key in ("crs", "extent", "feature_count", "fields")})
+        with sqlite3.connect(f"file:{output.as_posix()}?mode=ro", uri=True) as database:
+            table = database.execute("SELECT table_name FROM gpkg_geometry_columns").fetchone()[0]
+            features = database.execute('SELECT * FROM "' + table.replace('"', '""') + '"').fetchall()
+        measurements.append(({key: measured[key] for key in ("crs", "extent", "feature_count", "fields")}, features))
         if enabled:
             row = history.rows()[0]
             facts = row["facts"]
@@ -274,3 +278,91 @@ def test_real_python_snapshot_request_raster_and_resource_scope(tmp_path: Path, 
     row["links"]["script_snapshot"] = result["script_snapshot"]
     Path(result["script_snapshot"]).write_text("tampered", encoding="utf-8")
     assert not history.read_resource(row, "script")["ok"]
+
+
+def test_history_tool_after_compaction_reads_fifth_step(tmp_path: Path) -> None:
+    from gis_agent.core.auxiliary import AuxiliaryCalls
+    from gis_agent.core.context import ContextConfig, ContextManager, SUMMARY_SECTIONS, prefix_digest
+    from gis_agent.persistence.evidence import file_digest
+    from gis_agent.persistence.json import write_json
+    from gis_agent.tools.history import make_history_tool
+    from test_acceptance import make_graph_agent, reply
+    store = SessionStore(tmp_path / "sessions", "recovery")
+    output = tmp_path / "outputs" / "recovery"
+    log = output / "python_logs" / "old"
+    log.mkdir(parents=True)
+    snapshot = log / "script.py"
+    snapshot.write_text("area = population / height\n", encoding="utf-8")
+    stderr = log / "stderr.txt"
+    stderr.write_text("KeyError: original diagnostic\n", encoding="utf-8")
+    value = {"ok": False, "stderr": stderr.read_text(), "script_snapshot": str(snapshot),
+             "script_sha256": file_digest(snapshot), "stderr_path": str(stderr), "stderr_sha256": file_digest(stderr)}
+    old = [{"role": "user", "origin": "user", "content": "计算"},
+           assistant(call("run_python_script", {"script_path": "fifth.py", "arguments": ["input.gpkg"]})),
+           store.tool_message("repeated", "run_python_script", value, 8000)]
+    messages = [*old, {"role": "user", "origin": "user", "content": "继续定位早期问题"}]
+    store.save(messages)
+    summary = {key: [] for key in SUMMARY_SECTIONS}
+    summary["goal"] = [{"text": "继续计算", "sources": [0]}]
+    write_json(store.context_path, {"version": 1, "covered": 3, "prefix_digest": prefix_digest(messages, 3), "summary": summary})
+    history = ExecutionHistory(store, output)
+    tool = make_history_tool(history)
+    counter = make_token_counter(ModelConfig(tokenizer="bytes"))
+    context = ContextManager(store, ContextConfig(recent_users=1), AuxiliaryCalls(None, store.record_model_call, counter), {tool.name})
+    view = context.prepare("系统", messages, {}, [tool])
+    assert "original diagnostic" not in str(view.messages)
+    result = tool.run({"query": "fifth.py", "section": "detail", "max_characters": 8000})
+    detail = json.loads(result["text"])
+    assert detail["arguments"]["arguments"] == ["input.gpkg"]
+    assert "population / height" in detail["script"]["text"]
+    assert "original diagnostic" in detail["stderr"]["text"]
+    assert detail["result"]["ok"] is False
+    assert not tool.run({"path": str(tmp_path / "secret")})["ok"]
+    replies = iter([reply("history", "execution_history", {"query": "fifth.py", "section": "arguments"}),
+                    reply("finish", "finish_task", {"status": "answer", "summary": "已定位"})])
+    agent = make_graph_agent(store, lambda *_: next(replies), counter, InMemorySaver(), (tool,))
+    agent.history = history
+    assert agent.run(messages)["status"] == "answer"
+
+
+def test_cli_history_is_offline_and_chat_syntax_is_compatible(tmp_path: Path, monkeypatch) -> None:
+    from typer.testing import CliRunner
+    from gis_agent import cli
+    store = SessionStore(tmp_path / "records", "offline")
+    store.save([assistant(call("operation", {"value": 5})), store.tool_message("repeated", "operation", {"ok": True}, 8000)])
+    (tmp_path / ".env").write_text("GIS_AGENT_SESSIONS_DIR=records\nGIS_AGENT_QGIS_DIR=missing\n", encoding="utf-8")
+    for key in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY", "GIS_AGENT_SESSIONS_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    runner = CliRunner()
+    calls = []
+    monkeypatch.setattr(cli, "chat", lambda project, session: calls.append((project, session)))
+    result = runner.invoke(cli.app, ["history", "--project", str(tmp_path), "--session", "offline"])
+    assert result.exit_code == 0, result.stdout
+    assert json.loads(result.stdout)["items"][0]["status"] == "succeeded" and not calls
+    for arguments in (["--project", str(tmp_path), "--session", "offline"],
+                      ["chat", "--project", str(tmp_path), "--session", "offline"],
+                      ["--project", str(tmp_path), "--session", "offline", "chat"]):
+        assert runner.invoke(cli.app, arguments).exit_code == 0
+    assert calls == [(tmp_path, "offline")] * 3
+    assert runner.invoke(cli.app, ["--help"]).exit_code == 0
+    assert runner.invoke(cli.app, ["chat", "--help"]).exit_code == 0
+
+
+def test_lazy_query_checks_selected_receipt_and_status_filter_checks_all(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, "conflict")
+    source = call("a", {})
+    message = store.tool_message("repeated", "a", {"ok": True}, 8000)
+    store.save([assistant(source), message])
+    history = ExecutionHistory(store)
+    history.begin(0, 0, source)
+    history.complete("e000000_00", message, 1, 1)
+    before = history.record_path("e000000_00").read_bytes()
+    with pytest.raises(ValueError, match="已完成回执"):
+        history.raised("e000000_00", RuntimeError("late"), 2)
+    assert history.record_path("e000000_00").read_bytes() == before
+    record = json.loads(before)
+    record["state"] = "failed"
+    history.record_path("e000000_00").write_text(json.dumps(record), encoding="utf-8")
+    assert history.query()["items"][0]["status"] == "unknown"
+    assert history.query(status="unknown")["matches"] == 1
+    assert history.query(status="succeeded")["matches"] == 0

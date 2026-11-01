@@ -72,7 +72,7 @@ class ExecutionHistory:
                 raise ValueError("工具资产经过链接跳出了当前 Session。")
         return tool_result(self.store, message)
 
-    def facts(self, value: Any, arguments: Any, metadata: dict | None = None) -> dict:
+    def facts(self, value: Any, arguments: Any, metadata: dict | None = None, *, capture_request: bool = False) -> dict:
         facts: dict[str, Any] = {"dependency_completeness": "unknown", "inputs": [], "outputs": []}
         if not isinstance(value, dict):
             return facts
@@ -108,8 +108,8 @@ class ExecutionHistory:
                                "script_changed": value.get("script_changed"), "actual_code_identity": "not_proven"}
             request = Path(value["script_snapshot"]).parent / "request.json"
             if request.resolve().is_relative_to(self.output_root / "python_logs") and request.is_file():
-                facts["request"] = {"path": str(request), "sha256": file_digest(request),
-                                    "observed_at": datetime.now(timezone.utc).isoformat()}
+                facts["request"] = {"path": str(request), "sha256": file_digest(request) if capture_request else None,
+                                    "identity_strength": "captured_at_completion" if capture_request else "unverified_reference"}
         return facts
 
     def read_resource(self, row: dict, section: str, cursor: int = 0, limit: int = 4000) -> dict:
@@ -121,18 +121,23 @@ class ExecutionHistory:
         if section == "request":
             reference = row.get("facts", {}).get("request", {})
             location, expected, filename = reference.get("path"), reference.get("sha256"), "request.json"
+        elif section == "traceback":
+            location, expected = row["links"].get("traceback_path"), row["links"].get("traceback_sha256")
+            filename = f"{row['execution_id']}.traceback.txt"
         else:
             path_key, hash_key, filename = resources[section]
             location, expected = row["links"].get(path_key), row["links"].get(hash_key)
         if not location:
             return {"ok": False, "error": "该执行没有对应资源引用。"}
         path = Path(location).resolve()
-        if not path.is_relative_to(self.output_root / "python_logs") or path.name != filename:
+        allowed = self.record_dir if section == "traceback" else self.output_root / "python_logs"
+        if not path.is_relative_to(allowed) or path.name != filename:
             return {"ok": False, "error": "资源超出当前 Session 的 Python 日志范围。"}
         try:
-            if expected is None or file_digest(path) != expected:
+            data = path.read_bytes()
+            if expected is None or hashlib.sha256(data).hexdigest() != expected:
                 raise ValueError("资源缺少内容指纹或校验失败。")
-            text = path.read_text(encoding="utf-8")
+            text = data.decode("utf-8")
         except (OSError, UnicodeError, ValueError) as error:
             return {"ok": False, "error": str(error)}
         end = min(cursor + limit, len(text))
@@ -176,7 +181,7 @@ class ExecutionHistory:
         value = self.read_result(message)
         record.update(state=result_status(value), finished_at=datetime.now(timezone.utc).isoformat(),
                       elapsed_ms=elapsed_ms, message_index=message_index, message_sha256=digest(message))
-        record["facts"] = self.facts(value, arguments, record.get("metadata"))
+        record["facts"] = self.facts(value, arguments, record.get("metadata"), capture_request=True)
         if len(json_text(message)) <= 16000:
             record["completion_message"] = message
         write_json(path, record)
@@ -184,39 +189,44 @@ class ExecutionHistory:
     def raised(self, identifier: str, error: Exception, elapsed_ms: float) -> None:
         path = self.record_path(identifier)
         record = json.loads(path.read_text(encoding="utf-8"))
+        if record["state"] != "started":
+            raise ValueError("已完成回执不能改写成异常。")
         trace = "".join(traceback.format_exception(type(error), error, error.__traceback__))
-        trace_path = path.with_suffix(".traceback.txt")
+        trace_path = path.with_suffix(".traceback.txt").resolve()
+        if not trace_path.is_relative_to(self.record_dir):
+            raise ValueError("异常日志超出当前 Session 目录。")
         trace_path.write_text(trace, encoding="utf-8")
         record.update(state="raised", finished_at=datetime.now(timezone.utc).isoformat(),
                       elapsed_ms=elapsed_ms, error=f"{type(error).__name__}: {error}"[:3000],
                       traceback_path=str(trace_path), traceback_sha256=hashlib.sha256(trace.encode("utf-8")).hexdigest())
         write_json(path, record)
 
-    def merge_record(self, row: dict, call: dict, message: dict | None) -> None:
-        path = self.record_path(row["execution_id"])
-        if not path.exists():
-            return
+    def merge_record(self, row: dict, path: Path) -> None:
         try:
+            if path.is_symlink():
+                raise ValueError("执行回执不能通过文件链接读取。")
             record = json.loads(path.read_text(encoding="utf-8"))
             if (record["version"] != 1 or record["execution_id"] != row["execution_id"]
-                    or record["call_sha256"] != digest(call)):
+                    or record["call_sha256"] != row["sources"]["call_sha256"]):
                 raise ValueError("回执的原调用来源不匹配。")
-            if message is not None and record.get("message_sha256") is not None:
-                if (record["message_sha256"] != digest(message)
+            if row["pairing"] == "paired" and record.get("message_sha256") is not None:
+                if (record["message_sha256"] != row["sources"]["tool_message_sha256"]
                         or record["message_index"] != row["sources"]["tool_message_index"]):
                     raise ValueError("回执与 Session 工具结果不匹配。")
+                if record["state"] != row["status"]:
+                    raise ValueError("回执状态与工具结果冲突。")
             row.update({key: record[key] for key in ("started_at", "finished_at", "elapsed_ms")})
             row["recorded_state"] = record["state"]
             if "facts" in record:
                 row["facts"] = record["facts"]
-            if message is None:
+            if row["pairing"] != "paired":
                 if record["state"] == "raised":
                     row.update(status="raised", error=record["error"])
                     row["links"].update({key: record[key] for key in ("traceback_path", "traceback_sha256")})
                 elif record.get("completion_message"):
                     completion = record["completion_message"]
                     if (digest(completion) != record["message_sha256"]
-                            or completion.get("tool_call_id") != call.get("id")
+                            or completion.get("tool_call_id") != row["sources"]["tool_call_id"]
                             or completion.get("tool_name") != row["tool"]):
                         raise ValueError("孤立完成消息的来源不匹配。")
                     value = self.read_result(completion)
@@ -224,12 +234,25 @@ class ExecutionHistory:
         except (OSError, ValueError, KeyError, TypeError) as error:
             row.update(status="unknown", integrity="conflict", error=str(error))
 
-    def rows(self) -> list[dict[str, Any]]:
+    def hydrate(self, row: dict, path: Path | None = None) -> None:
+        if row["integrity"] != "ok":
+            return
+        try:
+            path = path or self.record_path(row["execution_id"])
+            if path.exists():
+                self.merge_record(row, path)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            row.update(status="unknown", integrity="conflict", error=str(error))
+
+    def rows(self, *, read_receipts: bool = True) -> list[dict[str, Any]]:
         if not self.store.path.exists():
             return []
         messages = json.loads(self.store.path.read_text(encoding="utf-8"))
         if not isinstance(messages, list) or any(not isinstance(item, dict) for item in messages):
             raise ValueError("Session 顶层必须是消息对象列表。")
+        if self.record_dir.resolve() != self.record_dir:
+            raise ValueError("执行回执目录经过链接跳出了当前 Session。")
+        records = {path.stem: path for path in self.record_dir.glob("e*.json")} if read_receipts else {}
         rows = []
         for index, message in enumerate(messages):
             if message.get("role") != "assistant":
@@ -250,7 +273,7 @@ class ExecutionHistory:
                     "arguments_raw": raw, "arguments": None, "result": None,
                     "status": "unknown", "integrity": "ok", "pairing": "unpaired",
                     "started_at": None, "finished_at": None, "elapsed_ms": None,
-                    "sources": {"assistant_index": index, "call_slot": slot, "tool_call_id": call.get("id")},
+                    "sources": {"assistant_index": index, "call_slot": slot, "tool_call_id": call.get("id"), "call_sha256": digest(call)},
                     "links": {}, "dependency_completeness": "unknown",
                 }
                 try:
@@ -263,6 +286,7 @@ class ExecutionHistory:
                 elif matched:
                     tool_index, item = matched[0]
                     row["sources"]["tool_message_index"] = tool_index
+                    row["sources"]["tool_message_sha256"] = digest(item)
                     row["pairing"] = "paired"
                     try:
                         if (item.get("tool_name", row["tool"]) != row["tool"]
@@ -277,11 +301,10 @@ class ExecutionHistory:
                             row["error"] = str(value.get("error") or value.get("stderr") or "")[-3000:]
                         if "argument_error" in row:
                             row["status"] = "rejected"
-                if row["integrity"] == "ok":
-                    try:
-                        self.merge_record(row, call, matched[0][1] if matched else None)
-                    except (OSError, ValueError, KeyError, TypeError) as error:
-                        row.update(status="unknown", integrity="conflict", error=str(error))
+                if row["execution_id"] in records:
+                    self.hydrate(row, records[row["execution_id"]])
+                elif not read_receipts and row["pairing"] == "unpaired":
+                    self.hydrate(row)
                 if "facts" not in row:
                     row["facts"] = self.facts(row["result"], row["arguments"])
                 rows.append(row)
@@ -304,14 +327,17 @@ class ExecutionHistory:
     ) -> dict[str, Any]:
         if offset < 0 or cursor < 0 or not 1 <= limit <= 20 or not 512 <= max_characters <= 8000:
             return {"ok": False, "error": "offset/cursor 必须非负，limit 为1～20，max_characters 为512～8000。"}
-        if section not in {"summary", "arguments", "result", "error", "links", "detail"}:
+        resources = {"script", "stdout", "stderr", "request", "traceback"}
+        if section not in {"summary", "arguments", "result", "error", "links", "detail", *resources}:
             return {"ok": False, "error": "不支持的历史读取 section。"}
         try:
-            rows = self.rows()
+            rows = self.rows(read_receipts=status is not None)
         except (OSError, ValueError, KeyError, TypeError) as error:
             return {"ok": False, "error": str(error)}
         selected = []
         for row in reversed(rows):
+            if row["tool"] == "execution_history" and row["pairing"] == "unpaired":
+                continue
             if execution_id is not None and row["execution_id"] != execution_id:
                 continue
             if tool is not None and row["tool"] != tool:
@@ -332,7 +358,22 @@ class ExecutionHistory:
             if offset >= len(selected):
                 return {"ok": False, "error": "未找到对应执行。", "matches": len(selected)}
             row = selected[offset]
-            value = row if section == "detail" else row.get(section)
+            if status is None:
+                self.hydrate(row)
+            if section in resources:
+                if row["integrity"] != "ok":
+                    return {"ok": False, "error": "执行来源不完整，不能读取关联资源。", "integrity": row["integrity"]}
+                return {**self.read_resource(row, section, cursor, max_characters), "execution_id": row["execution_id"]}
+            if section == "detail":
+                value = {key: row.get(key) for key in ("execution_id", "tool", "status", "arguments", "error")}
+                if row["integrity"] == "ok":
+                    if row["links"].get("script_snapshot"):
+                        value["script"] = self.read_resource(row, "script", limit=2000)
+                    if row["links"].get("stderr_path"):
+                        value["stderr"] = self.read_resource(row, "stderr", limit=1500)
+                value.update(result=row["result"], links=row["links"], facts=row["facts"], sources=row["sources"])
+            else:
+                value = row.get(section)
             if section == "arguments" and value is None:
                 value = row["arguments_raw"]
             text = json_text(value)
@@ -343,6 +384,8 @@ class ExecutionHistory:
                     "next_cursor": end if end < len(text) else None}
         items = []
         for row in selected[offset:offset + limit]:
+            if status is None:
+                self.hydrate(row)
             item = {key: row[key] for key in (
                 "execution_id", "tool", "status", "integrity", "pairing", "sources",
                 "started_at", "finished_at", "elapsed_ms", "dependency_completeness",
@@ -356,5 +399,5 @@ class ExecutionHistory:
                 break
             items.append(item)
         end = offset + len(items)
-        return {"ok": True, "matches": len(selected), "items": items,
+        return {"ok": True, "matches": len(selected), "matches_scope": "verified_records" if status is not None else "session_candidates", "items": items,
                 "next_offset": end if end < len(selected) else None}

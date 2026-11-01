@@ -24,7 +24,7 @@ from gis_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 PASSIVE_TOOLS = {
-    'update_plan', 'finish_task', 'read_session_messages',
+    'update_plan', 'finish_task', 'read_session_messages', 'execution_history',
     'search_memory', 'remember_memory', 'forget_memory',
     'list_files', 'read_file', 'search_text', 'inspect_data', 'summarize_fields',
     'check_spatial_relation', 'read_image', 'search_qgis_tools', 'calculate_distance',
