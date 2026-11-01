@@ -235,6 +235,8 @@ class ExecutionHistory:
             row.update(status="unknown", integrity="conflict", error=str(error))
 
     def hydrate(self, row: dict, path: Path | None = None) -> None:
+        if row.get('pairing') == 'replay_child':
+            return
         if row["integrity"] != "ok":
             return
         try:
@@ -317,6 +319,35 @@ class ExecutionHistory:
                     row["script"] = script
                     row["previous_same_script"] = previous.get(script)
                     previous[script] = row["execution_id"]
+        for path in self.record_dir.glob('r_*_s*.json'):
+            try:
+                if path.is_symlink():
+                    raise ValueError('子回执不能通过链接读取。')
+                record = json.loads(path.read_text(encoding='utf-8'))
+                if record.get('origin') != 'replay_child' or record.get('execution_id') != path.stem:
+                    raise ValueError('子回执来源冲突。')
+                call = record['resolved_call']
+                value = record.get('result')
+                status = {'completed': 'succeeded', 'failed': 'failed'}.get(record['state'], 'unknown')
+                integrity = 'ok'
+                if status == 'succeeded':
+                    from gis_agent.core.replay import validate_outputs
+                    if not validate_outputs(record['output_versions']):
+                        status, integrity = 'unknown', 'conflict'
+                rows.append({'execution_id': path.stem, 'tool': call['tool'],
+                             'arguments': call['arguments'], 'arguments_raw': json_text(call['arguments']),
+                             'result': value, 'status': status, 'integrity': integrity, 'pairing': 'replay_child',
+                             'sources': {'repair_id': record['repair_id'], 'source_execution': record['source_execution']},
+                             'links': result_links(value), 'facts': self.facts(value, call['arguments']),
+                             'started_at': record.get('started_at'), 'finished_at': record.get('finished_at'),
+                             'elapsed_ms': record.get('elapsed_ms'), 'dependency_completeness': 'declared',
+                             'error': str((value or {}).get('error') or (value or {}).get('stderr') or '')[-3000:]})
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                rows.append({'execution_id': path.stem, 'tool': 'unknown', 'arguments': None,
+                             'arguments_raw': '', 'result': None, 'status': 'unknown', 'integrity': 'corrupt',
+                             'pairing': 'replay_child', 'sources': {}, 'links': {}, 'facts': {},
+                             'started_at': None, 'finished_at': None, 'elapsed_ms': None,
+                             'dependency_completeness': 'unknown', 'error': str(error)})
         return rows
 
     def query(

@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from dataclasses import replace
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -181,3 +182,148 @@ def test_python_patch_failures_do_not_run(python_repair, failure):
     with pytest.raises(ReplayError):
         replay(RepairPlan.parse(value), history, registry.execute, history.output_root, resolve_tool=registry.get)
     assert not (history.output_root / 'repairs/python_fix/sum.npy').exists()
+
+
+def test_python_cache_identity_and_changed_content(python_repair):
+    import os
+    history, registry, value, script, prefix = python_repair
+    environment = {'managed': 'local-test'}
+    starts = []
+    def execute(name, args):
+        starts.append(name)
+        return registry.execute(name, args)
+    def run(plan):
+        return replay(RepairPlan.parse(plan), history, execute, history.output_root,
+                      resolve_tool=registry.get, environment=environment)
+    first = run(value)
+    assert first['ok'] and len(starts) == 1
+    assert run(value) == first and len(starts) == 1
+    conflict = deepcopy(value)
+    conflict['reason'] = 'different'
+    with pytest.raises(ReplayError, match='不同计划'):
+        run(conflict)
+    second = deepcopy(value)
+    second.update(repair_id='second', parent_repair='python_fix')
+    result = run(second)
+    assert result['reused'] == ['tail'] and len(starts) == 1, result
+    source = Path(value['accepted_inputs']['values']['path'])
+    stat = source.stat()
+    content = bytearray(source.read_bytes())
+    content[-8:] = (100).to_bytes(8, 'little')
+    source.write_bytes(content)
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    changed = deepcopy(value)
+    changed.update(repair_id='changed', parent_repair='second')
+    assert run(changed)['completed'] == ['tail'] and len(starts) == 2
+    Path(first['outputs']['tail']['sum']).unlink()
+    assert run(value)['status'] == 'unknown' and len(starts) == 2
+    child = history.query(execution_id=result['execution_refs']['tail'], section='detail', max_characters=8000)
+    assert child['ok']
+
+
+def test_helper_candidate_and_parameter_cache_invalidation(python_repair):
+    history, registry, value, script, prefix = python_repair
+    helper = history.output_root / 'helper.py'
+    helper.write_text('factor=2\n')
+    candidate = history.output_root / 'candidate.py'
+    candidate.write_text(script.read_text().replace("result=values['missing']",
+        "from helper import factor\nresult=values.sum()*factor*job['parameters']['scale']"))
+    changes = value['steps'][0]['changes']
+    changes.pop('patches')
+    changes.update(candidate_script=str(candidate), expected_sha256=file_digest(candidate),
+        dependencies={'helper.py': {'path': str(helper), 'expected_sha256': file_digest(helper)}}, job_parameters={'scale': 1})
+    def run(plan):
+        return replay(RepairPlan.parse(plan), history, registry.execute, history.output_root,
+                      resolve_tool=registry.get, environment={'managed': 'local-test'})
+    first = run(value)
+    assert first['ok']
+    for index, modify in enumerate(('helper', 'code', 'parameter', 'environment')):
+        current = deepcopy(value)
+        current.update(repair_id=f'change{index}', parent_repair='python_fix')
+        if modify == 'helper':
+            helper.write_text('factor=3\n')
+            current['steps'][0]['changes']['dependencies']['helper.py']['expected_sha256'] = file_digest(helper)
+        elif modify == 'code':
+            candidate.write_text(candidate.read_text() + '\nprint("revision")\n')
+            current['steps'][0]['changes']['expected_sha256'] = file_digest(candidate)
+        elif modify == 'parameter':
+            current['steps'][0]['changes']['job_parameters']['scale'] = 3
+        else:
+            current['steps'][0]['changes']['job_parameters']['scale'] = 4
+        current['steps'][0]['changes']['expected_sha256'] = file_digest(candidate)
+        current['steps'][0]['changes']['dependencies']['helper.py']['expected_sha256'] = file_digest(helper)
+        assert run(current)['completed'] == ['tail']
+
+
+@pytest.mark.parametrize('fault', ['cycle', 'port', 'collision'])
+def test_dependency_graph_rejected_before_execution(tmp_path, fault):
+    from gis_agent.core.replay import order_steps
+    value = {'repair_id': 'graph', 'parent_repair': None, 'reason': 'test', 'accepted_inputs': {},
+             'steps': [{'step_id': 'a', 'source_execution': 'e000000_00', 'inputs': {}, 'changes': {}, 'outputs': {'x': 'a.json'}},
+                       {'step_id': 'b', 'source_execution': 'e000000_00', 'inputs': {'x': {'step': 'a', 'output': 'x'}},
+                        'changes': {}, 'outputs': {'x': 'b.json'}}], 'targets': ['b']}
+    if fault == 'cycle':
+        value['steps'][0]['inputs'] = {'x': {'step': 'b', 'output': 'x'}}
+    elif fault == 'port':
+        value['steps'][1]['inputs']['x']['output'] = 'missing'
+    else:
+        value['steps'][1]['outputs']['x'] = 'a.json'
+    with pytest.raises(ReplayError):
+        order_steps(RepairPlan.parse(value), tmp_path)
+
+
+def test_qgis_family_reuses_independent_branch_and_gpkg_changes(gis_repair):
+    history, registry, starts, value = gis_repair
+    branch = deepcopy(value['steps'][0])
+    branch.update(step_id='independent', outputs={'OUTPUT': 'independent.gpkg'})
+    branch['changes']['parameter_overrides']['DISTANCE'] = 20
+    value['steps'].append(branch)
+    value['targets'].append('independent')
+    def run(plan):
+        return replay(RepairPlan.parse(plan), history, registry.execute, history.output_root,
+                      resolve_tool=registry.get, environment={'managed': 'qgis-test'})
+    first = run(value)
+    assert first['ok'] and len(starts) == 6
+    next_plan = deepcopy(value)
+    next_plan.update(repair_id='adjust', parent_repair='fix')
+    next_plan['steps'][0]['changes']['parameter_overrides']['DISTANCE'] = 300
+    adjusted = run(next_plan)
+    assert adjusted['completed'] == ['buffer', 'overlay'] and adjusted['reused'] == ['independent']
+    assert len(starts) == 8
+    with sqlite3.connect(history.output_root / 'zones.gpkg') as db:
+        db.execute('PRAGMA user_version=42')
+    third = deepcopy(next_plan)
+    third.update(repair_id='zones_changed', parent_repair='adjust')
+    changed = run(third)
+    assert changed['completed'] == ['overlay'] and changed['reused'] == ['buffer', 'independent']
+    assert len(starts) == 9
+    (history.output_root / 'zones.gpkg-wal').write_bytes(b'active')
+    fourth = deepcopy(third)
+    fourth.update(repair_id='wal', parent_repair='zones_changed')
+    with pytest.raises(ReplayError, match='活动日志'):
+        run(fourth)
+    assert len(starts) == 9
+
+
+def test_tiff_content_and_sidecar_identity(tmp_path, qgis_dir):
+    from gis_agent.core.replay import file_version, same_version
+    script = tmp_path / 'raster.py'
+    raster = tmp_path / 'grid.tif'
+    script.write_text("from osgeo import gdal,osr\nimport sys\np=sys.argv[1]\n"
+        "d=gdal.GetDriverByName('GTiff').Create(p,3,3,1,gdal.GDT_Float32)\n"
+        "s=osr.SpatialReference();s.ImportFromEPSG(int(sys.argv[2]));d.SetProjection(s.ExportToWkt())\n"
+        "d.SetGeoTransform([0,10,0,30,0,-10]);d.GetRasterBand(1).SetNoDataValue(float(sys.argv[3]))\n"
+        "d.GetRasterBand(1).Fill(4);d=None\n", encoding='utf-8')
+    def create(crs, nodata):
+        assert run_python_script(qgis_dir/'bin/python-qgis-ltr.bat', tmp_path/'python_logs', str(script),
+                                 [str(raster), str(crs), str(nodata)])['ok']
+    create(32650, -9999)
+    original = file_version(str(raster))
+    create(32649, -9999)
+    assert not same_version(original)
+    changed = file_version(str(raster))
+    create(32649, -999)
+    assert not same_version(changed)
+    Path(str(raster)+'.aux.xml').write_text('<PAMDataset/>')
+    with pytest.raises(ReplayError, match='附属'):
+        file_version(str(raster))

@@ -1,10 +1,12 @@
 import json
 import re
+import shutil
 import sqlite3
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
+from datetime import datetime, timezone
 from typing import Any
 
 from gis_agent.persistence.evidence import file_digest
@@ -163,6 +165,58 @@ def accept_inputs(plan: RepairPlan, rows: dict) -> dict:
     return result
 
 
+def seal_inputs(accepted: dict, root: Path) -> tuple[dict, float]:
+    started = perf_counter()
+    result = {}
+    for index, (name, version) in enumerate(accepted.items()):
+        path = root / 'inputs' / f'{index:03d}{Path(version["path"]).suffix}'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(version['path'], path)
+        copied = file_version(str(path))
+        if copied['sha256'] != version['sha256'] or not same_version(version):
+            raise ReplayError('输入在封存期间变化。')
+        result[name] = version | copied | {'original_path': version['path'], 'level': 'controlled'}
+    return result, (perf_counter() - started) * 1000
+
+
+def validate_outputs(versions: dict) -> bool:
+    return bool(versions) and all(same_version(version) for version in versions.values())
+
+
+def cached_steps(plan: RepairPlan, history: ExecutionHistory, output_dir: Path) -> list[dict]:
+    candidates, visited = [], set()
+    parent = plan.parent_repair
+    while parent:
+        identifier(parent)
+        if parent in visited:
+            raise ReplayError('修订继承链循环。')
+        visited.add(parent)
+        directory = output_dir.resolve() / 'repairs' / parent
+        original = json.loads((directory / 'plan.json').read_text(encoding='utf-8'))
+        for path in history.record_dir.glob(f'r_{parent}_s*.json'):
+            record = json.loads(path.read_text(encoding='utf-8'))
+            if record.get('origin') == 'replay_child' and record.get('state') == 'completed':
+                candidates.append(record)
+        parent = original.get('parent_repair')
+    return candidates
+
+
+def signature_for(step, tool, arguments, bindings, outputs, code, environment):
+    versions = {}
+    for name, source in bindings.items():
+        path, *selector = source.split('|', 1)
+        versions[name] = file_version(path) | {'selector': selector}
+    normalized = {key: value for key, value in arguments.items() if key not in bindings and key not in outputs}
+    if code is not None:
+        normalized = {'parameters': step.changes.get('job_parameters', {}),
+                      'code': file_digest(Path(arguments['script_path'])),
+                      'dependencies': {name: digest_bytes(data) for name, data in code[1].items()}}
+    signature = digest({'tool': tool.name, 'metadata': tool.execution_metadata, 'parameters': normalized,
+                        'inputs': {name: {k: v for k, v in version.items() if k != 'path'} for name, version in versions.items()},
+                        'outputs': step.outputs, 'implementation': file_digest(Path(__file__)), 'environment': environment})
+    return signature, versions
+
+
 def qgis_call(step: ReplayStep, row: dict, tool, bindings: dict, outputs: dict) -> dict:
     metadata = tool.execution_metadata
     if not metadata or not metadata.get('algorithm_id', '').startswith(('native:', 'gdal:')):
@@ -266,11 +320,26 @@ def replay(plan: RepairPlan, history: ExecutionHistory, execute: Callable, outpu
             qgis_call(step, row, tool, bindings, outputs)
         prepared[step.step_id] = row, tool, outputs, code
     if root.exists():
-        raise ReplayError('修订目录已存在；请使用新 repair_id。')
+        if json.loads((root / 'plan.json').read_text(encoding='utf-8')) != json.loads(json.dumps(asdict(plan))):
+            raise ReplayError('repair_id 已关联不同计划。')
+        result_path = root / 'result.json'
+        if not result_path.exists():
+            return {'ok': False, 'status': 'unknown', 'repair_id': plan.repair_id,
+                    'error': '已有修订未形成终态，需检查意图和部分产物，禁止自动重试。'}
+        previous = json.loads(result_path.read_text(encoding='utf-8'))
+        for reference in previous['execution_refs'].values():
+            record = json.loads((history.record_dir / f'{reference}.json').read_text(encoding='utf-8'))
+            if record['state'] == 'completed' and (not validate_outputs(record['output_versions']) or record.get('environment') != environment):
+                return previous | {'ok': False, 'status': 'unknown', 'error': '完成回执与输出或环境不一致。'}
+        return previous
+    candidates = cached_steps(plan, history, output_dir)
     root.mkdir(parents=True)
     write_json(root / 'plan.json', asdict(plan))
+    accepted, copy_ms = seal_inputs(accepted, root)
+    write_json(root / 'inputs.json', accepted)
     report = {'ok': False, 'status': 'failed', 'repair_id': plan.repair_id, 'completed': [], 'reused': [],
-              'failed': [], 'pending': [s.step_id for s in ordered], 'outputs': {}, 'execution_refs': {}}
+              'failed': [], 'pending': [s.step_id for s in ordered], 'outputs': {}, 'execution_refs': {},
+              'metrics': {'input_copy_ms': copy_ms, 'fingerprint_ms': 0.0, 'native_starts': 0}}
     for index, step in enumerate(ordered):
         row, tool, outputs, code = prepared[step.step_id]
         bindings = {name: (report['outputs'][b['step']][b['output']] if 'step' in b else
@@ -278,20 +347,45 @@ def replay(plan: RepairPlan, history: ExecutionHistory, execute: Callable, outpu
                     for name, b in step.inputs.items()}
         if code is not None:
             script = freeze_python(step, *code, root)
+            frozen_versions = [file_version(str(path)) for path in script.parent.rglob('*') if path.is_file()]
             job = script.parent / 'job.json'
             write_json(job, {'inputs': bindings, 'parameters': step.changes.get('job_parameters', {}), 'outputs': outputs})
             arguments = {'script_path': str(script), 'arguments': [str(job)]}
         else:
             arguments = qgis_call(step, row, tool, bindings, outputs)
+        started = perf_counter()
+        signature, versions = signature_for(step, tool, arguments, bindings, outputs, code, environment)
+        report['metrics']['fingerprint_ms'] += (perf_counter() - started) * 1000
+        cacheable = environment is not None and (
+            tool.execution_metadata and tool.execution_metadata.get('algorithm_id') in {
+                'native:reprojectlayer', 'native:buffer', 'native:intersection', 'native:clip',
+                'native:dissolve', 'native:fixgeometries',
+            } or step.changes.get('deterministic') is True)
+        match = next((record for record in candidates if cacheable and record.get('cacheable')
+                      and record.get('signature') == signature and validate_outputs(record['output_versions'])), None)
         reference = f'r_{plan.repair_id}_s{index:02d}'
         receipt = history.record_dir / f'{reference}.json'
         record = {'version': 1, 'origin': 'replay_child', 'execution_id': reference,
                   'repair_id': plan.repair_id, 'step_id': step.step_id, 'source_execution': step.source_execution,
-                  'resolved_call': {'tool': tool.name, 'arguments': arguments}, 'state': 'started'}
+                  'resolved_call': {'tool': tool.name, 'arguments': arguments}, 'state': 'started',
+                  'started_at': datetime.now(timezone.utc).isoformat(), 'environment': environment,
+                  'signature': signature, 'input_versions': versions, 'cacheable': cacheable,
+                  'dependency_level': 'controlled', 'outputs': outputs}
+        if match:
+            record.update(state='completed', reused_from=match['execution_id'], output_versions=match['output_versions'],
+                          result=match['result'], elapsed_ms=0.0, finished_at=datetime.now(timezone.utc).isoformat())
+            write_json(receipt, record)
+            report['pending'].remove(step.step_id)
+            report['reused'].append(step.step_id)
+            report['outputs'][step.step_id] = {name: item['path'] for name, item in record['output_versions'].items()}
+            report['execution_refs'][step.step_id] = reference
+            continue
         write_json(receipt, record)
         started = perf_counter()
+        report['metrics']['native_starts'] += 1
         result = execute(tool.name, arguments)
-        record.update(result=result, elapsed_ms=(perf_counter() - started) * 1000)
+        record.update(result=result, elapsed_ms=(perf_counter() - started) * 1000,
+                      finished_at=datetime.now(timezone.utc).isoformat())
         report['pending'].remove(step.step_id)
         report['execution_refs'][step.step_id] = reference
         if not isinstance(result, dict) or not result.get('ok'):
@@ -299,8 +393,12 @@ def replay(plan: RepairPlan, history: ExecutionHistory, execute: Callable, outpu
             write_json(receipt, record)
             report['failed'].append({'step_id': step.step_id, 'result': result})
             break
-        versions = {name: file_version(path) for name, path in outputs.items()}
-        record.update(state='completed', output_versions=versions)
+        output_versions = {name: file_version(path) for name, path in outputs.items()}
+        if not all(same_version(version) for version in versions.values()):
+            raise ReplayError('受控输入在执行期间变化，不能发布成功。')
+        if code is not None and not all(same_version(version) for version in frozen_versions):
+            raise ReplayError('冻结脚本在执行期间变化。')
+        record.update(state='completed', output_versions=output_versions)
         write_json(receipt, record)
         report['completed'].append(step.step_id)
         report['outputs'][step.step_id] = outputs
