@@ -20,6 +20,11 @@ def classify_values(values, *, method='fisher_jenks', k=5, sample_size=None, see
         raise ValueError('Only original-domain fisher_jenks is implemented; choose other methods explicitly elsewhere')
     if type(k) is not int or k < 1 or type(max_fit_values) is not int or max_fit_values < 1:
         raise ValueError('k and max_fit_values must be positive integers')
+    raw = np.asarray(values)
+    if raw.dtype.kind in 'iu' and ((raw > 2**53) | (raw < -2**53)).any():
+        raise ValueError('Integer values exceed exact Float64 precision; choose an explicit scaling/precision policy')
+    if raw.dtype.kind == 'O' and any(isinstance(v, (int, np.integer)) and abs(int(v)) > 2**53 for v in raw.flat):
+        raise ValueError('Integer values exceed exact Float64 precision')
     array = np.asarray(values, dtype=float)
     if array.ndim != 1:
         raise ValueError('One-dimensional values required')

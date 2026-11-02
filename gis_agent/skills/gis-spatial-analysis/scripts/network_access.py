@@ -40,7 +40,7 @@ def build_primal(lines, *, road_key, direction, cost, level_fields=(),
         raise ValueError('Level attributes must be explicit and nonnull')
     data = lines.reset_index(drop=True)
     for geometry in data.geometry:
-        if geometry is None or geometry.geom_type != 'LineString' or geometry.is_empty or not geometry.is_simple or geometry.length <= 0:
+        if geometry is None or geometry.geom_type != 'LineString' or geometry.is_empty or not geometry.is_valid or not geometry.is_simple or geometry.length <= 0:
             raise ValueError('Simple nonzero LineStrings required; resolve multipart/degenerate roads explicitly')
     levels = [tuple(row[f] for f in level_fields) for _, row in data.iterrows()]
     tree = shapely.STRtree(data.geometry.to_numpy())
@@ -61,7 +61,7 @@ def build_primal(lines, *, road_key, direction, cost, level_fields=(),
                             assumptions=['2D levels unspecified'] if not level_fields else [])
     roads = {}
     for i, row in data.iterrows():
-        rid, geometry = row[road_key], row.geometry
+        rid, geometry = row[road_key], data.geometry.iloc[i]
         d = row[direction]
         if d not in {'both', 'forward', 'backward'}:
             raise ValueError('Direction must be both, forward or backward')
@@ -91,9 +91,9 @@ def project_to_edges(points, edges, *, point_key, edge_key, max_distance):
     for frame, key in ((points, point_key), (edges, edge_key)):
         if frame[key].isna().any() or frame[key].duplicated().any():
             raise ValueError('Unique nonnull business keys required')
-    if any(g is None or g.is_empty or g.geom_type != 'Point' for g in points.geometry):
+    if any(g is None or g.is_empty or not g.is_valid or g.geom_type != 'Point' for g in points.geometry):
         raise ValueError('Nonempty Point geometries required')
-    if any(g is None or g.is_empty or g.geom_type != 'LineString' or g.length <= 0 for g in edges.geometry):
+    if any(g is None or g.is_empty or not g.is_valid or g.geom_type != 'LineString' or g.length <= 0 for g in edges.geometry):
         raise ValueError('Nonzero LineStrings required')
     if points.empty:
         return {'matches': [], 'unmatched': [], 'ambiguous': []}

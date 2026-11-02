@@ -44,6 +44,8 @@ def cases():
     assert rejected(lambda: build(roads(crossing)))
     separate = build(roads(crossing, levels=[0, 1]))
     assert nx.number_weakly_connected_components(separate) == 2
+    renamed = roads([LineString([(0, 0), (10, 0)])]).rename_geometry('shape')
+    assert build(renamed).number_of_edges() == 2
     parallel = build(roads([LineString([(0, 0), (5, 0), (10, 0)]),
                             LineString([(0, 0), (5, 3), (10, 0)])], costs=[10, 7]))
     nodes = list(parallel.nodes)
@@ -62,6 +64,8 @@ def cases():
         roads([LineString([(-1, 0), (1, 0)]), LineString([(-1, 2), (1, 2)])]),
         point_key='pid', edge_key='rid', max_distance=3)
     assert len(tied['matches']) == 2 and tied['ambiguous'] == ['tie']
+    invalid = gpd.GeoDataFrame({'pid': ['bad']}, geometry=[Point(float('nan'), 1)], crs=edges.crs)
+    assert rejected(lambda: project_to_edges(invalid, edges, point_key='pid', edge_key='rid', max_distance=20))
     facts['N2'] = {'nearest_edge': '0', 'midpoint_edge': '1', 'unmatched': hits['unmatched'], 'ties': 2}
 
     line = roads([LineString([(0, 0), (10, 0)])])

@@ -66,6 +66,10 @@ assert classify_values([0,100,101],k=2)['labels']==[0,1,1]
 assert classify_values([2,2,None,float('inf')],k=5)['counts']==[2]
 assert classify_values([None],k=2)['effective_k']==0
 assert classify_values([0,1,2],k=9)['effective_k']==3
+for unsafe in ([2**53+1,2**53+2], [2**53+1,None]):
+    try: classify_values(unsafe,k=2)
+    except ValueError: pass
+    else: raise AssertionError('Integer precision loss was silent')
 try: classify_values(range(50),max_fit_values=10)
 except ValueError: pass
 else: raise AssertionError('Exact budget not enforced')
@@ -82,7 +86,7 @@ assert all(result['metrics'][k]>=0 for k in ['input_fingerprint_ms','draw_ms','s
 try: vector(str(source),str(source),str(folder/'bad'),area_layer='areas',point_layer='areas')
 except ValueError as e: assert 'points' in str(e)
 else: raise AssertionError('Polygon pretending to be point accepted')
-Path(os.environ['GIS_AGENT_RESULT_PATH']).write_text(json.dumps({{'oracle_cases':28,'map':result,'class_counts':encoding['class_counts']}}))
+Path(os.environ['GIS_AGENT_RESULT_PATH']).write_text(json.dumps({{'oracle_cases':25,'map':result,'class_counts':encoding['class_counts']}}))
 '''
     run = execute(qgis_dir, tmp_path, code)
     assert run['ok'], run
@@ -265,3 +269,29 @@ def test_recent_hints_do_not_add_rounds_to_ordinary_python(qgis_dir, tmp_path, m
         facts = agent.history.rows()[0]['result']['result']
         outcomes.append((len(count),len(calls),facts))
     assert outcomes == [(2,1,{'sum':45})]*2
+
+
+def test_new_asset_cli_settings_and_result_channels(qgis_dir, tmp_path):
+    expected = tmp_path/'expected.csv'
+    allocated = tmp_path/'allocated.csv'
+    expected.write_text('zone,value\n0001,10\n0002,5\n')
+    allocated.write_text('zone,value\n0001,7\n')
+    cases = [
+        ('gis-verification', 'allocation_balance.py',
+         {'expected':str(expected),'allocations':str(allocated),'zone_key':'zone','value':'value',
+          'unit':'people','output':str(tmp_path/'balances.json')}),
+        ('gis-spatial-analysis', 'network_location.py',
+         {'costs':[[1,9],[20,2]],'weights':[1,1],'p':1}),
+        ('gis-cartography', 'classify_values.py', {'values':[0,1,100,None],'k':2}),
+    ]
+    results = []
+    for index,(skill,script,settings) in enumerate(cases):
+        job = tmp_path/f'job{index}.json'
+        job.write_text(json.dumps(settings),encoding='utf-8')
+        run = run_python_script(qgis_dir/'bin/python-qgis-ltr.bat',tmp_path/'logs',
+                                str(SKILLS/skill/'scripts'/script),[str(job)])
+        assert run['ok'],run
+        results.append(run['result'])
+    assert results[0]['residual_total']==8 and results[0]['zones_without_allocations']==['0002']
+    assert results[1]['sites']==[1]
+    assert results[2]['labels']==[0,0,1,-1] and results[2]['counts']==[2,1]

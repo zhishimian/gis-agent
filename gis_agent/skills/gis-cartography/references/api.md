@@ -9,6 +9,8 @@ metadata. First interval is closed; later intervals are left-open/right-closed.
 Use the SAME labels for colors and counts, and legend_labels for legend text.
 Do not deduplicate a repeated minimum break: it may represent a singleton class.
 Constant input has one class. Zero stays valid; nonfinite values are missing.
+Integer observations outside exact Float64 precision are rejected; preserve
+source precision before classification. Business IDs should remain separate.
 Above the explicit fitting budget, opt into sample_size with reported seed and
 approximation, or select a suitable exact method. No log-domain substitution.
 choropleth.py accepts method="fisher_jenks", k and optional sample_size instead
