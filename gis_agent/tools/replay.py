@@ -41,7 +41,7 @@ def make_replay_tool(history, registry, resolve_tool, launchers: tuple[Path, ...
 
     binding = {'type': 'object', 'description': 'One of {accepted:name} or {step:step_id,output:port}.'}
     return Tool('local_replay',
-        '可选：从execution_history的真实执行ID修订参数或冻结Python补丁，一次执行明确依赖的局部阶段，保留旧成果。'
+        '可选：用execution_history真实ID修订参数或冻结Python补丁，适合昂贵已保存前缀、明确文件依赖与需保留旧版本的局部修复；一次连续执行所需阶段。'
         '普通小修改可继续edit_file/run_python_script。本工具必须单独调用。'
         f'Python job契约、示例和限制按需读取：{probe.with_name("replay.md")}',
         {'type': 'object', 'properties': {'plan': {'type': 'object', 'properties': {

@@ -1,5 +1,9 @@
 # Task-dependent visual decisions
 
+For requested Fisher-Jenks, use the [shared classification encoding](api.md#fisher-jenks).
+Class labels, color count, class counts and legend intervals must agree. A fitted
+method must not silently change into logarithmic or quantile classification.
+
 | Situation | Decision and library controls | Check |
 | --- | --- | --- |
 | Rate, total or category | Choropleth for justified rates/densities; area-proportional markers for totals; stable categorical colors. | Field meaning, denominator and units. |

@@ -1,6 +1,22 @@
 # Plotting API and complete examples
 
-Use run_python_script in GIS-Agent. In Codex/Claude Code, use the configured GIS Python interpreter with this checkout on PYTHONPATH, and set GIS_AGENT_RESULT_PATH to a writable JSON result file. No model-specific invocation is required. The environment supplies Matplotlib, GeoPandas and Rasterio; do not assume another Python shares them. Dependencies are listed in [requirements](../../../integrations/plotting/requirements.txt). No new packages are needed by these examples.
+## Fisher-Jenks
+
+[classify_values.py](../scripts/classify_values.py) requires pinned jenkspy 0.4.1
+in the actual GIS interpreter. classify_values(values, k=5) returns lower,
+upper_bounds, positional labels (-1 for missing), counts, effective_k and fit
+metadata. First interval is closed; later intervals are left-open/right-closed.
+Use the SAME labels for colors and counts, and legend_labels for legend text.
+Do not deduplicate a repeated minimum break: it may represent a singleton class.
+Constant input has one class. Zero stays valid; nonfinite values are missing.
+Above the explicit fitting budget, opt into sample_size with reported seed and
+approximation, or select a suitable exact method. No log-domain substitution.
+choropleth.py accepts method="fisher_jenks", k and optional sample_size instead
+of manual breaks. The old explicit-break/continuous modes remain available.
+When importing an example from another directory, put its scripts directory on
+sys.path; controlled jobs must declare classify_values.py as a helper dependency.
+
+Use run_python_script in GIS-Agent. In Codex/Claude Code, use the configured GIS Python interpreter with this checkout on PYTHONPATH, and set GIS_AGENT_RESULT_PATH to a writable JSON result file. No model-specific invocation is required. Dependencies, including jenkspy for fitted classification, are listed in [requirements](../../../integrations/plotting/requirements.txt). Do not assume another Python shares them.
 
 ```python
 import geopandas as gpd

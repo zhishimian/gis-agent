@@ -16,16 +16,22 @@ from matplotlib.colors import BoundaryNorm, ListedColormap, Normalize
 from matplotlib.patches import Patch
 
 from gis_agent.integrations.plotting.runtime import MapPanel, configure_plotting, export_figure
+from classify_values import classify_values, legend_labels
 
 
 def draw(source: str, field: str, output_dir: str, *, layer: str | None = None, title: str = "",
-         unit: str = "", breaks: list[float] | None = None, colors: list[str] | None = None) -> dict:
+         unit: str = "", breaks: list[float] | None = None, colors: list[str] | None = None,
+         method: str | None = None, k: int = 5, sample_size: int | None = None) -> dict:
     configure_plotting()
     import matplotlib.pyplot as plt
 
     data = gpd.read_file(source, layer=layer)
     if data.crs is None or data.empty:
         raise ValueError("Area data must be nonempty and have a valid CRS.")
+    if not data.geom_type.isin(['Polygon', 'MultiPolygon']).all():
+        raise ValueError('Choropleth input must contain polygons')
+    if method and breaks is not None:
+        raise ValueError('Choose explicit breaks OR a fitted method')
     valid = data[data[field].notna()]
     missing = data[data[field].isna()]
     values = valid[field].to_numpy(dtype=float)
@@ -35,7 +41,18 @@ def draw(source: str, field: str, output_dir: str, *, layer: str | None = None, 
     try:
         handles = []
         counts = None
-        if breaks is not None:
+        encoding = None
+        if method:
+            encoding = classify_values(values, method=method, k=k, sample_size=sample_size)
+            n = encoding['effective_k']
+            palette = colors if colors is not None else [plt.get_cmap('viridis')(i / max(n-1, 1)) for i in range(n)]
+            if len(palette) != n:
+                raise ValueError('Color count must equal the effective class count')
+            # List is positional on this exact filtered frame, independent of its index.
+            valid.plot(ax=ax, color=[palette[i] for i in encoding['labels']], edgecolor='white', linewidth=.5)
+            handles = [Patch(facecolor=color, label=label) for color, label in zip(palette, legend_labels(encoding))]
+            counts = encoding['counts']
+        elif breaks is not None:
             if len(breaks) < 2 or not np.isfinite(breaks).all() or not np.all(np.diff(breaks) > 0):
                 raise ValueError("Class boundaries must be finite and strictly increasing.")
             if values.min() < breaks[0] or values.max() > breaks[-1] or colors is None or len(colors) != len(breaks) - 1:
@@ -49,7 +66,8 @@ def draw(source: str, field: str, output_dir: str, *, layer: str | None = None, 
             cmap = plt.get_cmap("viridis")
             norm = Normalize(values.min(), values.max())
             fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=ax, label=unit or field, shrink=0.72)
-        valid.plot(ax=ax, column=field, cmap=cmap, norm=norm, edgecolor="white", linewidth=0.5, zorder=1)
+        if not method:
+            valid.plot(ax=ax, column=field, cmap=cmap, norm=norm, edgecolor="white", linewidth=0.5, zorder=1)
         if not missing.empty:
             missing.plot(ax=ax, facecolor="#dddddd", edgecolor="white", hatch="///", linewidth=0.5, zorder=1)
             handles.append(Patch(facecolor="#dddddd", hatch="///", label="No data"))
@@ -61,7 +79,8 @@ def draw(source: str, field: str, output_dir: str, *, layer: str | None = None, 
             ax.set_title(title, fontsize=15)
         result = export_figure(fig, output_dir, inputs=(source,), map_panels=(MapPanel("main", ax, data.crs.to_string()),))
         Path(output_dir, "encoding.json").write_text(json.dumps({"field": field, "unit": unit, "breaks": breaks,
-            "class_counts": counts, "valid": len(valid), "missing": len(missing)}, ensure_ascii=False, indent=2), encoding="utf-8")
+            "class_counts": counts, "valid": len(valid), "missing": len(missing),
+            "classification": encoding}, ensure_ascii=False, indent=2), encoding="utf-8")
         return result
     finally:
         plt.close(fig)

@@ -5,8 +5,8 @@ from gis_agent.tools.base import Tool
 def make_history_tool(history: ExecutionHistory) -> Tool:
     return Tool(
         "execution_history",
-        "按需查当前Session真实执行。可按工具、脚本/成果路径或错误检索，默认最近5项；"
-        "已有信息充分时直接继续。detail读取所选执行的参数、代码摘录、错误及结果；"
+        "查当前Session真实执行版本、当时参数、代码快照、结果和错误。当前文件多次修改、查上次成功版本或摘要后回查时尤其有用。"
+        "用execution_id或脚本名query，status可筛succeeded/failed/unknown/returned，默认最近5项。detail读取参数、代码摘录、错误及结果；"
         "script/stdout/stderr/request/traceback按cursor分页读受限且校验过的资源。"
         "多项匹配时详情取offset指定项，默认最新；未知状态不证明执行完成。",
         {"type": "object", "properties": {

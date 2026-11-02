@@ -27,6 +27,10 @@ def draw(area_path: str, point_path: str, output_dir: str, *, area_layer: str | 
     points = gpd.read_file(point_path, layer=point_layer)
     if area.empty or points.empty or area.crs is None or points.crs is None:
         raise ValueError("Point and area data must be nonempty and have a valid CRS.")
+    if not area.geom_type.isin(['Polygon', 'MultiPolygon']).all():
+        raise ValueError('area_path must contain polygons; choose a matching rendering example')
+    if not points.geom_type.isin(['Point', 'MultiPoint']).all():
+        raise ValueError('point_path must contain points; marker does not convert polygons to locations')
     points = points.to_crs(area.crs)
     fig, ax = plt.subplots(figsize=(7, 6), layout="constrained")
     try:

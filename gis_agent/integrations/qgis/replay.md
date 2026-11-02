@@ -23,6 +23,23 @@ plan 包含 repair_id、parent_repair、reason、accepted_inputs、steps、targe
 
 ## Python
 
+适用条件：已有昂贵且仍有效的落盘前段，需要保留旧版本，并能明确本次输入与辅助依赖。直接修几行更便宜时继续普通编辑。普通阶段示例见 [staged-python](../../skills/gis-spatial-analysis/references/staged-python.md)。
+
+下面展示候选脚本的完整计划形态。用真实执行ID、路径和read_file返回的SHA替换占位符；候选脚本必须读job，不能继续读写旧脚本中的硬编码路径。
+
+```json
+{"repair_id":"derive_v2","parent_repair":null,"reason":"修订后段并保留前段",
+ "accepted_inputs":{"prepared":{"path":"<absolute>/intermediate.npy"}},
+ "steps":[{"step_id":"derive","source_execution":"<real_execution_id>",
+   "inputs":{"prepared":{"accepted":"prepared"}},
+   "changes":{"candidate_script":"<absolute>/derive_job.py","expected_sha256":"<actual_sha256>",
+     "job_contract":true,"side_effects":"outputs_only","deterministic":true,
+     "job_parameters":{"mode":"summarize"}},
+   "outputs":{"statistics":"statistics.json"}}],"targets":["derive"]}
+```
+
+deterministic只适用于确无随机性或隐藏输入的计算。新repair_id可用parent_repair继承可信成功前缀。需要声明的helper.py在changes.dependencies中给出路径及SHA；冻结后相对导入从新attempt解析。
+
 Python 步骤的 changes 必须声明 `job_contract:true`、`side_effects:"outputs_only"`。脚本读取 `sys.argv[1]` 的 JSON，其中有 inputs、parameters、outputs，值为明确文件路径或参数。cwd 和 __file__ 都指向新 attempt。需旁置的辅助文件用 dependencies 声明。
 
 使用 patches：`[{"expected_sha256":"<历史快照指纹>","old_text":"<唯一原文>","new_text":"<修正原文>"}]`。后续补丁的 expected_sha256 可以省略。

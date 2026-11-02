@@ -97,8 +97,11 @@ class ExecutionHistory:
                 path = Path(source.split("|", 1)[0]).resolve()
                 if path.is_relative_to(self.output_root):
                     item["observed_at"] = datetime.now(timezone.utc).isoformat()
-                    item["exists"] = path.is_file()
-                    if item["exists"]:
+                    item["exists"] = path.exists()
+                    item["path_exists"] = path.exists()
+                    item["kind"] = 'file' if path.is_file() else 'directory' if path.is_dir() else 'missing'
+                    item["layer_verified"] = None
+                    if path.is_file():
                         stat = path.stat()
                         item.update(size=stat.st_size, mtime_ns=stat.st_mtime_ns, identity_strength="stat_only")
                 facts["outputs"].append(item)
@@ -427,6 +430,13 @@ class ExecutionHistory:
                 item["previous_same_script"] = row["previous_same_script"]
             if row.get("error"):
                 item["error"] = row["error"][-400:]
+            refs = row.get('facts', {}).get('outputs', [])
+            item['output_refs'] = [{'name': str(ref.get('parameter', ''))[:64],
+                                    'source': str(ref.get('source', ''))[:240]}
+                                   for ref in refs[:2]]
+            algorithm = row.get('facts', {}).get('algorithm_id') or row.get('links', {}).get('algorithm_id')
+            if algorithm:
+                item['algorithm_id'] = algorithm
             if items and len(json_text([*items, item])) > max_characters:
                 break
             items.append(item)

@@ -3,3 +3,4 @@ matplotlib==3.10.8
 geopandas==1.0.1
 rasterio==1.4.3
 pandas==2.3.0
+jenkspy==0.4.1

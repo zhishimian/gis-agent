@@ -72,6 +72,8 @@ def analyze(source: str, reference: str, source_key: str, reference_key: str,
             "unmatched": int((result.match_count == 0).sum()),
             "multiple_matches": int((result.match_count > 1).sum()),
             "match_pairs": int(counts.sum()), "undefined_ratios": undefined,
+            "unmatched_reference": int((~right[reference_key].isin(hits['reference_id'].dropna())).sum()),
+            "unmatched_reference_examples": right.loc[~right[reference_key].isin(hits['reference_id'].dropna()), reference_key].astype(str).head(10).tolist(),
             "predicate": predicate, "query_geometry": query_geometry,
             "analysis_crs": str(query.crs), "output_crs": str(result.crs)}
 

@@ -9,6 +9,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from time import perf_counter
 
 import matplotlib
 from matplotlib import font_manager
@@ -49,7 +50,7 @@ def _fingerprints(paths: list[Path]) -> list[dict[str, str]]:
     for path in paths:
         path = path.expanduser().resolve()
         if not path.exists():
-            raise FileNotFoundError(f"登记文件不存在：{path}")
+            raise FileNotFoundError(f"登记文件不存在：{path}。inputs需物理文件或目录，图层名请单独说明，不能使用GDB/layer或QGIS URI。")
         if path.is_dir():
             files.update(item for item in path.rglob("*") if item.is_file())
         else:
@@ -81,7 +82,9 @@ def export_figure(
             raise ValueError(f"地图范围存在非有限数值：{panel.name}")
     fonts = sorted({Path(font_manager.findfont(text.get_fontproperties()))
                     for text in figure.findobj(Text) if text.get_visible() and text.get_text()})
+    measured = perf_counter()
     sources = _fingerprints([Path(path) for path in inputs])
+    timings = {'input_fingerprint_ms': (perf_counter() - measured) * 1000}
     output_dir = Path(output_dir).expanduser().resolve()
     targets = [output_dir / f"map.{format}" for format in dict.fromkeys(formats)]
     targets += [output_dir / "preview.png", output_dir / "manifest.json"]
@@ -92,12 +95,18 @@ def export_figure(
     preview = output_dir / "preview.png"
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
+        measured = perf_counter()
         figure.canvas.draw()
+        timings['draw_ms'] = (perf_counter() - measured) * 1000
+        measured = perf_counter()
         for format in dict.fromkeys(formats):
             path = output_dir / f"map.{format}"
             figure.savefig(path, format=format, dpi=dpi, bbox_inches=None)
             files[format] = str(path)
+        timings['save_ms'] = (perf_counter() - measured) * 1000
+        measured = perf_counter()
         figure.savefig(preview, format="png", dpi=min(160, 1800 / max(width, height)), bbox_inches=None)
+        timings['preview_ms'] = (perf_counter() - measured) * 1000
     notices = list(dict.fromkeys(str(item.message) for item in captured))
     for notice in notices:
         print(notice, file=sys.stderr)
@@ -118,7 +127,7 @@ def export_figure(
     result = {"version": 2, "ok": True, "files": files, "preview": str(preview), "manifest": str(manifest),
               "artifacts": list(files.values()), "figure": {"width_mm": width * 25.4, "height_mm": height * 25.4, "dpi": dpi},
               "map_panels": [{key: value for key, value in panel.items() if key != "artists"} for panel in panels],
-              "warnings": notices}
+              "warnings": notices, "metrics": timings}
     manifest.write_text(json.dumps({**result, "map_panels": panels, "environment": environment, "inputs": sources,
                                    "implementation": _fingerprints([Path(__file__)]),
                                    "outputs": _fingerprints([Path(path) for path in [*files.values(), str(preview)]])},

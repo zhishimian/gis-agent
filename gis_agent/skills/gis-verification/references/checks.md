@@ -1,5 +1,22 @@
 # Minimal sufficient evidence
 
+## Allocation and delivery
+
+Check source objects AND receiving zones. A preserved source ID set cannot show
+that every zone's population reached a target. Report expected, allocated,
+explicitly excluded and residual quantities with units; missing is not zero.
+Use [allocation_balance.py](../scripts/allocation_balance.py) for objective facts.
+It takes expected/excluded Series by unique zone and an allocation table, or a
+JSON CLI settings file naming expected/allocations CSV, zone_key/value/unit/output.
+Unknown zones, null amounts and zones without allocations remain explicit.
+It never removes duplicates or chooses a spatial assignment policy, and returns
+no universal PASS. Spatial ownership needs separate evidence when consequential.
+
+Reuse known warnings, counts, residuals and assumptions in delivery notes:
+completed outputs, evidence scope, then limits affecting requirements. Include
+unallocated quantities and unreachable demand, even when earlier scripts already
+found them. An extra report or full recomputation is unnecessary.
+
 ## Reuse host tools first
 
 These GIS-Agent tools are optional in other hosts; use their supplied schemas. Existing tools already cover the following facts:

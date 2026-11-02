@@ -1,6 +1,6 @@
 ---
 name: gis-cartography
-description: Design, render, revise and export thematic maps or scientific geographic figures with Matplotlib, GeoPandas and Rasterio. Use for requested map images, choropleths, raster/vector overlays or multi-panel figures. Skip data-only analysis and numeric verification; use gis-spatial-analysis and gis-verification for those. Review images for actual defects without repeating established analysis.
+description: Create and revise thematic maps with tested Matplotlib examples, fonts, classification and export helpers. Use for requested maps, overlays and multi-panel figures. Check actual geometry and legends; skip data-only analysis and numeric verification.
 compatibility: Requires the checkout's plotting helpers plus Matplotlib, GeoPandas and Rasterio in GIS Python. Other hosts must expose the checkout on PYTHONPATH.
 ---
 
@@ -14,11 +14,13 @@ Read only what is needed:
 
 - Vector overlay: [vector_map.py](scripts/vector_map.py).
 - Continuous or classified values: [choropleth.py](scripts/choropleth.py).
+- Original-domain Fisher-Jenks with shared labels/counts/legend: [classify_values.py](scripts/classify_values.py); see [API](references/api.md#fisher-jenks).
 - Raster, vector, inset and statistics: [raster_composite.py](scripts/raster_composite.py).
 - Environment, inputs, outputs and runnable settings: [API](references/api.md).
 - Encoding and layout choices: [design](references/design.md).
 - Fonts, projection and raster failures: [gotchas](references/gotchas.md).
 - Image feedback and stopping: [review](references/review.md).
+- Physical datasets and layer names: [shared I/O](../gis-spatial-analysis/references/data-io.md).
 
 Use arbitrary Figure/Axes/Artists; examples are editable starting points. Complete required figures before polishing details. Inspect the current whole image, crop only uncertain details, and fix observed displacement, occlusion, encoding or clipping defects together. Stop when no remaining defect changes task interpretation.
 Deliver PNG/SVG/PDF and rerunnable code. For uncertain analytical results consult gis-verification; image appearance alone cannot establish data correctness.
