@@ -16,6 +16,7 @@ Choose the smallest evidence that can expose a consequential error. Check a new 
 - Numerical precision and claim-specific counterexamples: [checks](references/checks.md#numerical-precision), with [precision_example.py](scripts/precision_example.py).
 - Held-out prediction and terrain/registration evidence: [checks](references/checks.md#prediction-and-terrain-evidence), including a [split counterexample](scripts/validation_split.py).
 - Business formulas, ambiguous matches and network assumptions still need semantic reasoning; a script cannot choose the intended policy.
+- Necessary evidence remains unavailable: [evidence gaps and handoff](references/checks.md#evidence-gaps-and-handoff) distinguishes recoverable errors, missing input and consequential business choices.
 
 Record the checked objects, observation, scope and PASS/FAIL/UNKNOWN briefly. A zero exit code proves execution, not the business claim; null measurements leave a gap. Apply task-defined precision at its specified stage, preserve execution errors, and keep sample claims within their coverage.
 Stop when the requirement has sufficient evidence. Extra reports, evidence registration and cross-engine reimplementation are optional. For a necessary custom Processing check, reuse the [shared execution reference](../../integrations/qgis/execution.md).

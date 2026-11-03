@@ -22,6 +22,17 @@ python main.py
 
 `execution_history` 按需查当前 Session 的真实参数、脚本快照、结果和错误。`local_replay` 为依赖明确的局部修订保留版本和复用成果；它不恢复 Python 内存，也不自动推断隐藏依赖。Fisher-Jenks 示例需要在实际 QGIS Python 中安装固定的 jenkspy 版本，见上述制图依赖清单。
 
+## 等待用户与继续
+
+Agent 缺少必要信息时可用 `needs_input` 提问。CLI 会展示问题及保留成果，输入回答即可在同一 Session 继续。输入 `exit` 或在提示处结束输入会保存等待；再次使用同一 `--session` 打开会显示原问题。等待时输入 `cancel` 可取消任务并保留成果。运行中的原生计算不支持内存级暂停。
+
+```powershell
+python main.py --session my-task chat
+python main.py --session my-task waiting
+```
+
+`waiting` 只读查看已有问题，无需模型 Key 或启动 QGIS。完成状态包括 `completed`、`partial`、`needs_input`、`blocked`、`cancelled`；`answer` 用于普通问答。部分完成会列出未完成要求。能力边界及证据见 [V8.4 实施报告](docs/v8.4-implementation-report.md)。
+
 ## 输出预算与验证
 
 DeepSeek 默认 `max_tokens=393216`。配置入口为 `GIS_AGENT_MAX_OUTPUT_TOKENS`。输入预算同时为输出和协议留出空间。其他供应商的上限需按实际模型显式配置。上限只限制最大生成量；费用按实际用量计算。

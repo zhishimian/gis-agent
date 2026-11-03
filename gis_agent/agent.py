@@ -102,7 +102,8 @@ class Agent:
         return json.dumps(self.memory.recall(query), ensure_ascii=False)
 
     def run(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        if self.graph.get_state(self.options()).next:
+        previous = self.graph.get_state(self.options())
+        if previous.next:
             raise ValueError('当前会话仍有待续跑的图，请先调用 resume。')
         message_units(messages)
         self.messages = messages
@@ -116,7 +117,7 @@ class Agent:
         state: RunState = {
             'version': 810,
             'turn_start': start, 'model_index': len(messages), 'responses_used': 0,
-            'execution_started': False, 'algorithms': [],
+            'execution_started': False, 'algorithms': list(previous.values.get('algorithms', [])) if messages[start].get('in_reply_to') else [],
             'callable_names': [], 'memory_errors': [], 'handled_sources': [], 'handled_bodies': [],
             'background': self.recall(start), 'record_hash': self.record_hash(),
             'auxiliary_used': 0, 'outcome': None,
@@ -168,6 +169,9 @@ class Agent:
             'latest_user_message': max(i for i, item in enumerate(self.messages) if item['role'] == 'user' and item.get('origin') != 'program'),
             'recent_tool_messages': {item['tool_call_id']: i for i, item in enumerate(self.messages) if item['role'] == 'tool' and i >= len(self.messages) - 20},
         }
+        latest = self.messages[business['latest_user_message']]
+        if latest.get('in_reply_to'):
+            business['answer_to_request'] = latest['in_reply_to']
         try:
             request = self.context.prepare(self.instructions, self.messages, business, self.available(state), state['background'])
         except (ContextLimit, AuxiliaryError) as error:
@@ -285,6 +289,11 @@ class Agent:
             return {"ok": False, "error": "本轮已执行操作，请报告任务状态。"}
         if status == "completed" and self.plan.unfinished():
             return {"ok": False, "error": "计划仍有未完成项，请继续处理或报告阻碍。", "unfinished": self.plan.unfinished()}
+        if status == 'cancelled' and not any(
+                message.get('cancelled_request') for message in self.messages[state['turn_start']:]):
+            return {'ok':False,'error':'cancelled需用户明确取消；无法完成请用blocked/partial或提出必要问题。'}
+        if status in {'partial', 'blocked', 'needs_input'} and self.plan.unfinished():
+            result = result | {'unfinished_plan': self.plan.unfinished()}
         state["outcome"] = result
         return result
 
