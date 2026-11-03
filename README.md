@@ -1,4 +1,4 @@
-# GIS-Agent V8.3
+# GIS-Agent V8.4
 
 单 Agent GIS 助手。LangGraph 管理模型与工具往返。QGIS Processing 和独立 QGIS Python 执行空间计算。Matplotlib、GeoPandas、Rasterio 负责静态制图。
 
@@ -45,4 +45,4 @@ python -B -m pytest tests -k "not live" -v -p no:cacheprovider
 
 本地离线运行需已有 tokenizer 缓存和可用 QGIS。设置 `HF_HUB_OFFLINE=1` 可禁止 tokenizer 下载。带 `live` 的测试会连接真实模型，需单独授权运行。
 
-当前交付与证据见 [V8.3 实施报告](docs/v8.3-implementation-report.md)。历史基线见 [V7 收官](docs/v7-finalization.md)，开发交接见 [HANDOFF](HANDOFF.md)。
+当前交付与证据见 [V8.4 实施报告](docs/v8.4-implementation-report.md)。专业资产及历史/重放背景见 [V8.3 实施报告](docs/v8.3-implementation-report.md)。开发交接见 [HANDOFF](HANDOFF.md)。
