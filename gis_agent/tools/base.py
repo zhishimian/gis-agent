@@ -7,6 +7,7 @@ class Tool:
     description:str
     parameters:dict
     function:Callable[...,Any]
+    execution_metadata:dict[str,Any] | None = None
 
     def schema(self):
         return {

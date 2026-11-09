@@ -19,6 +19,7 @@ def tool_result(store: SessionStore, message: dict[str, Any]) -> Any:
         return json.loads(message["content"])
     path = store.asset_path(message["asset"])
     expected = message["asset"].get("sha256")
-    if expected is not None and file_digest(path) != expected:
+    data = path.read_bytes()
+    if expected is not None and hashlib.sha256(data).hexdigest() != expected:
         raise ValueError(f"工具结果资产校验失败：{path}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(data)

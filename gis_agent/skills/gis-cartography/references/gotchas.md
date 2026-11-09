@@ -1,5 +1,15 @@
 # Plotting gotchas
 
+- marker does not convert polygons to sites. Inspect geometry types; choose a
+  justified centroid/interior point/entrance only when the task permits it.
+- Filtered dataframe indices can be nonconsecutive. Use a positional color array
+  on the same rows or map by business ID; do not mask NaNs by blind index resets.
+- LineCollection does not accept every Line2D argument (for example
+  solid_capstyle); use the actual Artist's API. Derive colors/classes/legend from
+  one encoding. Keep the requested classification method and original domain.
+- Register physical GDB/GPKG paths with export_figure, not GDB/layer pseudo-paths.
+  Its metrics report input fingerprint, draw, save and preview time separately.
+
 - GIS libraries live in the configured GIS interpreter; another Python can lack them. Some installations use user-level packages. Check real environment paths when moving machines.
 - GeoPandas uses path plus layer, not a QGIS pipe URI. set_crs labels coordinates; to_crs transforms them.
 - Higher zorder draws above lower layers. Filled backgrounds can hide the subject. facecolor="none" is transparent; Python None can select a default fill.

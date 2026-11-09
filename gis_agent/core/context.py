@@ -18,6 +18,24 @@ class ContextLimit(ValueError):
     pass
 
 
+def recent_execution_refs(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Bounded hints from persisted metadata; no file reads or state mutation."""
+    refs = []
+    for message in reversed(messages):
+        name = message.get('tool_name', '')
+        identifier = message.get('execution_id')
+        if message.get('role') != 'tool' or not identifier or not (
+                name == 'run_python_script' or name == 'local_replay' or name.startswith('qgis_')):
+            continue
+        ref = {'id': identifier, 'tool': name[:72]}
+        if len(json_text([*refs, ref])) > 512:
+            break
+        refs.append(ref)
+        if len(refs) == 3:
+            break
+    return refs
+
+
 @dataclass(frozen=True)
 class ContextConfig:
     request_token_limit: int = 900_000
@@ -178,6 +196,9 @@ class ContextManager:
     ) -> PreparedRequest:
         units = message_units(messages)
         self.load_state(messages)
+        state = dict(state)
+        if refs := recent_execution_refs(messages):
+            state['recent_execution_refs'] = refs
         selected = list(tools)
         while True:
             candidates = [tool for tool in selected if tool.name not in self.pinned_names]

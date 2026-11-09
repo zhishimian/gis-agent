@@ -1,5 +1,9 @@
 # Execution gotchas
 
+For actual I/O backend errors use [data I/O](data-io.md). For repeated expensive
+prefixes see [staged Python](staged-python.md). Routing topology, COO duplicate
+sums and access-cost failures are covered by the [network guide](networks.md).
+
 | Symptom | Action |
 | --- | --- |
 | `processing` cannot be imported | Use the configured GIS interpreter and [run_processing](../../../integrations/qgis/execution.md). Its initialization sets the actual plugins path. |

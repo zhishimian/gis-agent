@@ -181,3 +181,82 @@ usage为输入5714137、命中5548672、未命中165465、输出62757、总57768
 三个Skills补充插值评价隔离、配准可信度、完整汇水区/分区/淹没区语义、工程地形与水文表面、NoData邻域、计算量和缓存失效。新反例validation_split.py、terrain_counterexamples.py只使用合成数据。不能将离线正确性或description修改称为自然触发率、模型正确率或成本收益。
 
 合并前免费离线50项通过、1个live项排除；针对性7项通过。1b5a8cc收拢有效成果后，main快进合并成功，无冲突。合并后再次完整免费回归50项通过、1项排除，110.44秒。未推送远端。日志和最终分支指针在outputs/v7_finalization_20261031，693个历史产物和18项原包/题面哈希未变。收官入口docs/v7-finalization.md，V8候选为docs/v8-candidates.md。原生长作业取消/进度、工作流依赖及人工介入本轮仅记录候选。旧实验、试题、Session和大量产物继续本地保留。V7可以冻结为开发基线，实际模型收益及发布环境仍未验收。
+
+## V8 架构研究
+
+2026-10-31：基于 main 的 5d82e58 完成 docs/v8-architecture-research.md 和 docs/v8-implementation-plan.md。仅研究与设计，应用、Prompt、Skills、配置和测试未改；没有模型 API 调用。原始探针和轨迹统计在 outputs/v8_research_20261031。docs/ 仍被 Git 忽略，后续提交文档时需单独检查。
+
+推荐先记录真实执行，再将昂贵或需要编辑的阶段转为显式轻量 DAG。确定性阶段批量执行，不为每个节点请求模型。V8 先做独立内核和 CLI，正式 QGIS 插件放到 V9。任意 Python 隐式依赖、活动数据库和未固定外部数据不自动缓存。Session、Checkpoint 与业务步骤保持各自职责，通过版本和完成回执关联。
+
+本机 LangGraph 1.2.18 的 SQLite 中断恢复探针通过。恢复会重新进入中断节点，节点内应避免昂贵计算和重复副作用。同一轮独立节点可完成，但独立分支的后继会等到 resume。需要先登记局部人工请求并推进 ready 工作，再进入全局等待。现有 drive 自动续跑静态检查点的逻辑需要识别真实人工中断。
+
+QGIS 3.44.9 的 .model3 使用 XML/variant。模型编辑器局部重跑依赖上次执行上下文；QgsProcessingModelInitialRunConfig 没有 Python 绑定。序列化独立探针发生原生访问冲突，未完成往返验证，原因未定位。后续模型适配须单独验收，不据此扩大推断现有 Processing 运行时的可靠性。
+
+## V8.0 / V8.1 设计再审视
+
+2026-11-01：新增 docs/v8.0-execution-history-design.md 和 docs/v8.1-autonomous-repair-design.md。两份是下一轮实施入口。旧研究保留，当前范围收紧为执行历史与自主局部修复。尚未实施 V8、调用模型 API 或重跑竞赛题。设计过程在 feature/v8-workflow，main 保持 5d82e58。
+
+V8.0 先从 Session 派生执行视图，再自动补小型文件回执与一个 execution_history 查询。V8.1 用可选 local_replay 一次提交明确修复范围，继续当前对话，按需形成小型依赖子图。暂不新增工作流 SQLite 或常驻 WorkflowRunner，不要求普通操作 prepare/finish，也不要求逐步专业 PASS。旧普通文件缺少历史内容指纹时，只能明确采用当前文件，不能称为已验证历史缓存。
+
+首个编码任务是 persistence/executions.py 的只读 rows：先准确配对现有调用、工具结果与资产，不改 Agent。后续才接自动记录。Typer 当前为单命令模式，增加 history 后需要保留原 chat 启动兼容。免费静态探针六项通过，记录在 outputs/v80_v81_design_20261101/static-probes.json；它们只验证现有基础，未证明新接口、自然修复率或 Token 收益。
+
+## V8.0 执行历史已实施
+
+2026-11-01：四个切片提交 c7014b0、04df1f5、43c869a、9baa4c7，均在 feature/v8-workflow。实施报告为 docs/v8.0-execution-history-implementation.md。main 保持 5d82e58，没有推送。Session、LangGraph 790 恢复、Context 和自由 Python 语义保留；未实现 local_replay。
+
+AgentFactory 注入 ExecutionHistory，自动记录真实调用边界。关键 Session 写失败仍抛出；辅助回执写失败只告警，不阻断工具。execution_history 支持 detail、script、stderr 等受限分页查询。CLI history 无需模型 Key 或 QGIS，原无子命令聊天和显式 chat 均可用。资源范围为当前 Session 资产和配置输出目录的 python_logs，归档 CLI 需要正确的 --project/--output-dir。
+
+完整免费回归68项通过、1项live排除，123.66秒；补强真实GPKG属性/几何一致性后单项复查通过。父测试进程禁真实网络，未调用收费API或竞赛复测。千条小回执默认查询中位数124.93ms、p95 196.46ms，新Schema 235 token。默认按Session候选筛选、核验返回项；status筛选会核验全部相关回执，成本更高。证据在 outputs/v80_execution_history_20261101。
+
+旧数据没有历史指纹时不能证明版本未变。Python快照只作记录，实际原路径代码身份仍标not_proven。只有started或孤立回执不自动修补Session或重放。下一步应先实现受控小流程的局部修订，避免把历史查询称为已具备自动修复或缓存。
+
+## V8.1 局部修复已实施
+
+2026-11-01：feature/v8-workflow 完成五个切片，提交 f502ec8、2813997、6a38c77、ba8125d、af61034；3c2f6e2 补强受控Python输出继承及环境身份。main 仍为5d82e58，未合并或推送。正式报告为docs/v8.1-implementation-report.md。
+
+唯一新增行动工具local_replay可选使用。core/replay.py组成真实小型依赖闭包，保留旧输出，封存明确本地输入，冻结补丁或候选Python及辅助文件。受控Python读job JSON，普通run_python_script语义不变。当前受控QGIS范围为native的reprojectlayer/buffer/intersection/clip/dissolve/fixgeometries，其他算法继续自由工具或Python路径。GPKG活动日志、外部栅格附属文件、数据库和未知副作用不自动复用。
+
+关键修复记录写失败不能发布成功；V8.0普通历史仍为辅助失败告警。新Checkpoint版本810，旧790保留原严格恢复。只恢复单独local_replay根调用，核对Session、原调用、计划、检查点和输出版本后使用graph.update_state(as_node='tools')。意图存在但缺少完成记录时保留unknown，不因文件存在重跑。代码和环境声明仍基于可信本机，不能恢复任意Python内存或穷举隐藏依赖。
+
+最终免费回归95 passed、1 live deselected，251.10秒。真实子进程崩溃、SQLite重开、QGIS参数修复与独立完整重算、Python补丁、受控前缀继承、缓存及原执行路径均通过。证据为outputs/v81_implementation_20261101。Schema增加383 token。小任务冷修复9.60秒、暖修复5.68秒、完整重算5.65秒、缓存1.72秒；环境哈希开销明显，不能笼统称局部重算更快。
+
+最后仅进行A/B两项真实DeepSeek Flash测试，输出临时限8192，SDK重试0，累计1.50元软件阈值。A12次、B6次响应，168648 token，空闲价usage估算0.07029904元；高峰价核算0.14059808元，未查账单。A修正500米缓冲及相交，B修正字段键并保留中间文件，两项独立核查通过。两项均未使用execution_history/local_replay，自主采用新接口及Token净收益仍未证实。A仍有一次未提供Schema调用和一次核查脚本API错误。真实测试后未再修改功能或追加实验。
+
+
+## V8.1 第十三届下午场诊断复盘
+
+2026-11-02：复盘见docs/v81-exam13-diagnostic-review.md，免费证据在outputs/v81_exam13_diagnostic_20261102。只读调查与微型反例，无收费调用，未改产品运行文件、Skills或历史成果。
+
+实际请求中三个Skill描述与历史/重放工具均可见，两个分析相关Skill未展开不能归为注册失效。FileGDB能力须按实际API后端验证，osgeo.ogr可创建不能推定pyogrio可写。SciPy COO转CSR默认累加重复节点对，maximum转置不能恢复最小道路代价。面层plot传marker仍画面，星号图例需核对实际几何。考试生成的Jenks函数已用三值反例确认边界错误；它未进入生产制图例程，历史分数没有因本次复盘修改。
+
+## V8.3 详细设计
+
+2026-11-02：设计入口为docs/v8.3-design.md。本轮仅研究和免费微型验证，未实施产品功能。研究证据在outputs/v83_design_research_20261102；final-checks.json确认95个产品及测试文件内容未变。分支仍为feature/v8-workflow，HEAD为2c20dbd，main为5d82e58。
+
+当前QGIS Python内pyogrio 0.12.1的微型OpenFileGDB写入、重读通过，包含中文、空值及字符串长ID。历史写入失败仍需按实际调用后端和完整Schema定位，不能泛化为当前环境不支持写GDB。QGIS 3.44.9最短路探针返回60米道路成本，未包含两端共50米接入；设施可达性需明确接入与道路成本口径。
+
+Session工具消息保存execution_id，但现有模型投影会过滤该字段。V8.3建议在现有末尾动态状态中提供最多3条近期计算引用，保持Session哈希和工具返回语义。普通阶段保存不自动取得受控缓存资格，local_replay继续使用原契约。本轮未证明新描述的模型采用率或Token收益。
+
+## V8.3 已实施
+
+2026-11-02：实施报告为docs/v8.3-implementation-report.md。功能提交4900722位于feature/v8-workflow，main保持5d82e58。新增阶段化Python、真实I/O探针、N1～N6网络模式、分配残差和Jenks分类资产；Context仅在模型视图末尾提供最多3条真实执行引用，历史摘要增加有界输出引用和目录事实。普通工具语义及V8.1受控安全边界保持。
+
+jenkspy 0.4.1以已核对SHA的CP312 Windows wheel、--no-deps安装到QGIS Python的Lib/site-packages，固定于绘图requirements。没有升级GDAL/NumPy或搬迁用户级GIS包。路网输入要求可信端点拓扑；未节点化同层交叉拒绝，层级相交不自动通行。浮点分类不能静默吞掉超过2^53的原始整数精度。
+
+完整免费集合106 passed、1 live排除；后续边界9项通过。真实模型共29次响应，空闲价usage估算0.19761904元，高峰保守0.39523808元。自然修复主动查历史并保留前段成功；受控重放在明确指定工具的独立诊断中首次执行、父修订复用均成功，不能称为自然采用证明。
+
+证据在outputs/v83_implementation_20261102。实际收费Session只在live-final/；live/是未收费的准备材料。网络自然任务因测试器160000字节单请求上限停止，分析CSV正确但未完成制图。phase-stop-audit确认停止与费用、时间或未知usage无关；未重跑该题。后续独立任务沿用同一累计账本。不要把这次部分完成归因为资金耗尽，也不要用Skill阅读次数替代结果改善。
+
+## V8.4 等待与协同
+
+2026-11-03：报告docs/v8.4-implementation-report.md，证据outputs/v84_implementation_20261103。finish_task复用needs_input，新增明确question/reason与partial；业务等待完成当前图轮次到END，不能把图END当作整个任务已成功。Conversation从真实工具结果派生request_id，用户回答以in_reply_to/reply_id关联原Session，保留已发现算法、计划、历史和成果。没有新增Agent工具、工作流数据库或Checkpoint版本。
+
+CLI同Session重开会展示原问题；直接回答继续，exit/提示处EOF保留等待，cancel明确取消并保留成果。waiting命令无需模型Key/QGIS。原生计算中途不支持任意暂停。单Session仍需单写者。取消写入及已保存回答的窄恢复核对旧前缀哈希与问题ID，其他历史冲突不放行。
+
+完整免费回归120 passed、1 live排除，288.14秒；固定回复配合真实QGIS及独立进程验证暂停、保存、补充和继续。自然模型行为未测，本轮没有新增收费授权，实际API调用0。future-natural仅是待授权材料，不能把协议测试表述成真实模型已会主动识别能力边界。
+
+## 新 Benchmark 材料入口
+
+2026-11-09：整理报告为outputs/benchmark_materials_20261109/README.md。timu暂存下GeoBenchX和gis-benchmarks/GABench对应两套基准；Data.zip是GeoBenchX配套输入。GeoBenchX共202题，其中120道可解GIS题、79道原工具条件下拒绝题、3道常识题。GeoAgentBench共53题，参考文件为49张PNG和1份CSV，另有3项CHECK规则。
+
+GABench原工作区有大量修改，保留原状。50个LFS指针的对象已下载、按SHA校验并放到独立supplement/GABench目录；逐题真实输入路径见geoagentbench-index-organizer.json。下载时Git配置的127.0.0.1:18081未监听，仅本次命令关闭代理后成功，全局配置未改。原目录的指针仍在，后续须按映射准备完整输入。GeoBenchX解压根为extracted/GeoBenchX_package/Data；巴西二级行政区Shapefile缺少CRS。原评估包含工具序列比对，不能直接用原工具名匹配衡量自由Python解法。组织者索引、参考链和参考成果不能进入解题上下文。本轮模型调用0。

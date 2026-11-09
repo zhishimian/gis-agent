@@ -1,5 +1,9 @@
 # Visual evidence and stopping
 
+Before judging symbols, check actual geometry types, encoded field and class
+counts. A star legend beside selected zone polygons cannot establish point
+delivery. Image review and these small data facts complement each other.
+
 Reuse established analysis evidence. Check only new display transforms and encodings unless a defect exposes an analytical gap.
 
 1. Read actual layer/field/CRS/extent facts. For overlays compare a known anchor; for rasters inspect transform, NoData and resampling.

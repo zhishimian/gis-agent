@@ -1,5 +1,41 @@
 # Minimal sufficient evidence
 
+## Evidence gaps and handoff
+
+First inspect available metadata, known layers and relevant examples. A code
+exception calls for diagnosis; it does not prove permanent inability. Missing
+optional data can leave a limited useful result. Missing indispensable inputs
+or materially different unsupported business choices can require a question.
+Preserve independent completed work while the affected branch waits.
+
+Do not invent CRS, roads, population or buildings to close a coverage gap.
+Disconnected roads and unallocated quantities are legitimate observed facts.
+Distinguish unreachable, unmatched, unsupported and not yet executed. A user
+approval applies only to its stated assumption/scope; keep original evidence.
+
+In GIS-Agent, finish_task(needs_input) asks a concrete question with the missing
+condition, its effect, available alternatives and retained artifacts. partial
+reports useful completed outputs plus unfinished requirements. blocked records
+why no reliable continuation is available. Ordinary successful work needs no
+approval. These host statuses are optional in other Code Agent environments.
+
+## Allocation and delivery
+
+Check source objects AND receiving zones. A preserved source ID set cannot show
+that every zone's population reached a target. Report expected, allocated,
+explicitly excluded and residual quantities with units; missing is not zero.
+Use [allocation_balance.py](../scripts/allocation_balance.py) for objective facts.
+It takes expected/excluded Series by unique zone and an allocation table, or a
+JSON CLI settings file naming expected/allocations CSV, zone_key/value/unit/output.
+Unknown zones, null amounts and zones without allocations remain explicit.
+It never removes duplicates or chooses a spatial assignment policy, and returns
+no universal PASS. Spatial ownership needs separate evidence when consequential.
+
+Reuse known warnings, counts, residuals and assumptions in delivery notes:
+completed outputs, evidence scope, then limits affecting requirements. Include
+unallocated quantities and unreachable demand, even when earlier scripts already
+found them. An extra report or full recomputation is unnecessary.
+
 ## Reuse host tools first
 
 These GIS-Agent tools are optional in other hosts; use their supplied schemas. Existing tools already cover the following facts:

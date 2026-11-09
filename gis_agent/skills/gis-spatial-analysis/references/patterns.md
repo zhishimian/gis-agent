@@ -35,12 +35,7 @@ Write the target quantity and unit before choosing numerator/denominator. Distin
 
 For raster/elevation work, establish pixel-center versus all-touched inclusion, masks/NoData, horizontal CRS and vertical units. Align grids explicitly when needed. A maximum surface elevation and an object's height above its base are different quantities. Derive each field from its specified inputs, and apply required rounding at the stage named by the task.
 
-For networks specify edge versus vertex attachment, access costs, direction and impedance. Connecting to a nearest vertex can change the route compared with splitting the nearest edge. Unreachable objects remain explicit; substitute Euclidean cost only under an agreed interpretation and keep it distinguishable. A connector line's length alone does not encode network cost.
-
-NetworkX Graph/DiGraph store one edge per node pair; adding the same edge updates its attributes. A longer road can overwrite a shorter parallel road, including its geometry, while Dijkstra still returns successfully. Preserve the cost, geometry and road identity together. Choose a minimum-cost edge or MultiGraph/MultiDiGraph from the task's model. Collapsing alternatives is valid only when costs are additive and the roads are interchangeable for this query; attach/split facilities first. Turn restrictions, mode/access rules or road-specific state can require retaining distinct edges.
-
-[parallel_edges.py](../scripts/parallel_edges.py) is a complete synthetic NetworkX example with three nodes. Run it without arguments through run_python_script or Python. It reports the overwritten graph's cost, the minimum-edge graph's cost and the MultiGraph cost. Dependencies: NetworkX and the standard library. It writes JSON to GIS_AGENT_RESULT_PATH when set, otherwise stdout; failures propagate. This is a counterexample, not a road loader, snapping implementation or routing framework. A correct shortest-path routine cannot repair roads lost during graph construction.
-The overwritten graph costs 9; both preserved-alternative graphs cost 5 (2 + 3). The shorter road's ID remains attached to its retained cost.
+For network topology, exact access, costs and facility applications, read the [network guide](networks.md). The [parallel-edge counterexample](../scripts/parallel_edges.py) remains a short executable introduction.
 
 ## Complete Processing example
 

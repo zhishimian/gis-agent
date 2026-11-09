@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+from time import perf_counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
@@ -15,6 +16,8 @@ from gis_agent.core.memory import MemoryStore, MemoryTurn, extract_memories
 from gis_agent.core.model import ModelReply
 from gis_agent.core.planning import Plan
 from gis_agent.persistence.sessions import SessionStore, message_units
+from gis_agent.persistence.executions import ExecutionHistory, execution_id, record_history
+from gis_agent.persistence.repairs import begin_root, complete_root, recover_root
 from gis_agent.prompts import render_prompt
 from gis_agent.tools.base import Tool
 from gis_agent.tools.registry import ToolRegistry
@@ -22,7 +25,7 @@ from gis_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 PASSIVE_TOOLS = {
-    'update_plan', 'finish_task', 'read_session_messages',
+    'update_plan', 'finish_task', 'read_session_messages', 'execution_history',
     'search_memory', 'remember_memory', 'forget_memory',
     'list_files', 'read_file', 'search_text', 'inspect_data', 'summarize_fields',
     'check_spatial_relation', 'read_image', 'search_qgis_tools', 'calculate_distance',
@@ -59,6 +62,7 @@ class Agent:
     memory: MemoryStore | None = None
     memory_turn: MemoryTurn | None = None
     checkpointer: BaseCheckpointSaver | None = None
+    history: ExecutionHistory | None = None
     graph: Any = field(init=False, repr=False)
     messages: list[dict[str, Any]] = field(init=False, repr=False)
 
@@ -98,7 +102,8 @@ class Agent:
         return json.dumps(self.memory.recall(query), ensure_ascii=False)
 
     def run(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        if self.graph.get_state(self.options()).next:
+        previous = self.graph.get_state(self.options())
+        if previous.next:
             raise ValueError('当前会话仍有待续跑的图，请先调用 resume。')
         message_units(messages)
         self.messages = messages
@@ -110,9 +115,9 @@ class Agent:
             self.memory_turn.reset(start)
         self.store.save(messages)
         state: RunState = {
-            'version': 790,
+            'version': 810,
             'turn_start': start, 'model_index': len(messages), 'responses_used': 0,
-            'execution_started': False, 'algorithms': [],
+            'execution_started': False, 'algorithms': list(previous.values.get('algorithms', [])) if messages[start].get('in_reply_to') else [],
             'callable_names': [], 'memory_errors': [], 'handled_sources': [], 'handled_bodies': [],
             'background': self.recall(start), 'record_hash': self.record_hash(),
             'auxiliary_used': 0, 'outcome': None,
@@ -123,9 +128,13 @@ class Agent:
         snapshot = self.graph.get_state(self.options())
         if not snapshot.next:
             raise ValueError('没有待续跑的检查点。')
-        if snapshot.values.get('version') != 790:
+        if snapshot.values.get('version') not in {790, 810}:
             raise ValueError('检查点来自旧版执行流程，请保留原记录，新建会话并提供已有成果路径。')
-        self.verify_record(snapshot.values)
+        if self.record_hash() != snapshot.values['record_hash']:
+            messages[:] = self.store.read_record()
+            if not recover_root(self, snapshot, messages):
+                self.verify_record(snapshot.values)
+            snapshot = self.graph.get_state(self.options())
         messages[:] = self.store.read_record()
         self.messages = messages
         restored = Plan.from_messages(messages)
@@ -160,6 +169,9 @@ class Agent:
             'latest_user_message': max(i for i, item in enumerate(self.messages) if item['role'] == 'user' and item.get('origin') != 'program'),
             'recent_tool_messages': {item['tool_call_id']: i for i, item in enumerate(self.messages) if item['role'] == 'tool' and i >= len(self.messages) - 20},
         }
+        latest = self.messages[business['latest_user_message']]
+        if latest.get('in_reply_to'):
+            business['answer_to_request'] = latest['in_reply_to']
         try:
             request = self.context.prepare(self.instructions, self.messages, business, self.available(state), state['background'])
         except (ContextLimit, AuxiliaryError) as error:
@@ -196,8 +208,11 @@ class Agent:
         if not calls:
             self.messages.append({'role': 'user', 'origin': 'program', 'content': render_prompt('continue.txt')})
             self.store.save(self.messages)
-        for call in calls:
+        for slot, call in enumerate(calls):
             name = call['function']['name']
+            identifier = None
+            repair_root = None
+            elapsed_ms = 0.0
             try:
                 arguments = json.loads(call['function']['arguments'])
             except json.JSONDecodeError as error:
@@ -207,14 +222,29 @@ class Agent:
                     result = {'ok': False, 'error': '工具参数必须是 JSON 对象。'}
                 elif name not in state['callable_names']:
                     result = {'ok': False, 'error': f'本次没有提供工具 {name}，请先搜索。'}
-                elif name == 'finish_task' and len(calls) != 1:
-                    result = {'ok': False, 'error': 'finish_task 必须单独调用。'}
+                elif name in {'finish_task', 'local_replay'} and len(calls) != 1:
+                    result = {'ok': False, 'error': f'{name} 必须单独调用。'}
+                elif name == 'local_replay' and not isinstance(arguments.get('plan'), dict):
+                    result = {'ok': False, 'error': 'local_replay.plan 必须是 JSON 对象。'}
                 else:
+                    if name == 'local_replay' and self.history is not None:
+                        repair_root = begin_root(self.history, state, self.messages, self.graph.get_state(self.options()))
                     message.setdefault('executions', {})[call['id']] = 'started'
                     self.store.save(self.messages)
+                    if self.history is not None:
+                        identifier = execution_id(state['model_index'], slot)
+                        record_history(self.history.begin, state['model_index'], slot, call,
+                                       self.registry.get(name).execution_metadata)
                     if name not in PASSIVE_TOOLS:
                         state['execution_started'] = True
-                    result = self.registry.execute(name, arguments)
+                    started = perf_counter()
+                    try:
+                        result = self.registry.execute(name, arguments)
+                    except Exception as error:
+                        if identifier is not None:
+                            record_history(self.history.raised, identifier, error, (perf_counter() - started) * 1000)
+                        raise
+                    elapsed_ms = (perf_counter() - started) * 1000
                     if name == 'search_qgis_tools' and isinstance(result, list):
                         algorithms = list(state['algorithms'])
                         for item in result:
@@ -236,6 +266,11 @@ class Agent:
                     errors.add(name)
                 state['memory_errors'] = sorted(errors)
             stored = self.store.tool_message(call['id'], name, result, self.context.config.tool_limit)
+            if identifier is not None:
+                stored['execution_id'] = identifier
+                record_history(self.history.complete, identifier, stored, len(self.messages), elapsed_ms, arguments)
+            if repair_root is not None:
+                complete_root(self.history, repair_root, call, stored)
             self.messages.append(stored)
             self.store.save(self.messages)
             logger.info('工具 %s：%s', name, stored['content'][:1200])
@@ -254,6 +289,11 @@ class Agent:
             return {"ok": False, "error": "本轮已执行操作，请报告任务状态。"}
         if status == "completed" and self.plan.unfinished():
             return {"ok": False, "error": "计划仍有未完成项，请继续处理或报告阻碍。", "unfinished": self.plan.unfinished()}
+        if status == 'cancelled' and not any(
+                message.get('cancelled_request') for message in self.messages[state['turn_start']:]):
+            return {'ok':False,'error':'cancelled需用户明确取消；无法完成请用blocked/partial或提出必要问题。'}
+        if status in {'partial', 'blocked', 'needs_input'} and self.plan.unfinished():
+            result = result | {'unfinished_plan': self.plan.unfinished()}
         state["outcome"] = result
         return result
 
