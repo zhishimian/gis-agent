@@ -260,3 +260,13 @@ CLI同Session重开会展示原问题；直接回答继续，exit/提示处EOF�
 2026-11-09：整理报告为outputs/benchmark_materials_20261109/README.md。timu暂存下GeoBenchX和gis-benchmarks/GABench对应两套基准；Data.zip是GeoBenchX配套输入。GeoBenchX共202题，其中120道可解GIS题、79道原工具条件下拒绝题、3道常识题。GeoAgentBench共53题，参考文件为49张PNG和1份CSV，另有3项CHECK规则。
 
 GABench原工作区有大量修改，保留原状。50个LFS指针的对象已下载、按SHA校验并放到独立supplement/GABench目录；逐题真实输入路径见geoagentbench-index-organizer.json。下载时Git配置的127.0.0.1:18081未监听，仅本次命令关闭代理后成功，全局配置未改。原目录的指针仍在，后续须按映射准备完整输入。GeoBenchX解压根为extracted/GeoBenchX_package/Data；巴西二级行政区Shapefile缺少CRS。原评估包含工具序列比对，不能直接用原工具名匹配衡量自由Python解法。组织者索引、参考链和参考成果不能进入解题上下文。本轮模型调用0。
+
+## GeoAgentBench 53题 V0 基线
+
+2026-11-10：测试程序在`benchmarks/geoagentbench/`，报告及全部实验记录在`outputs/gab_v0_20261110_01/report.md`。产品冻结于main的694ebe27，实验分支为feature/geoagentbench-v0；产品、Skills及Prompt未改。百炼deepseek-v4.1-flash-1017正式收到2601次响应。53题独立运行，7题仅因传输异常沿原Session恢复，未新开整题替换成果。最终运行状态42完成、9保护停止、1超时、1存储异常；专业复核36正确、10部分、1失败、5待定、1基础设施异常。标签与正常运行结束分开。
+
+正式usage估算49.831036元，加试跑与连接探针共52.2455652元；未知usage保留预留后保守累计60.7185712元，低于用户授权100元。未核对账单。缓存输入按百炼高峰0.2元/百万计算，不能套用直连DeepSeek价格。SDK重试关闭，显式传输重试及预留逐次留痕。
+
+重要实验限制：Python隔离器曾禁止枚举项目父目录，真实脚本cwd下FileFinder无法导入gis_agent。日志有70次相关失败返回、涉及39题。全部收费结束后才通过小型复现确认并修正测试器；原成果保留且未收费重跑。测试必须从真实脚本目录验证项目助手导入，同时核对参考读取和网络仍被拒绝。下一轮要先统一修正后的测试器再解释V1增益，不能把消除隔离错误的收益归为产品改进。
+
+原CHECK也需独立审查：42题官方true与线段穿建筑三角面的事实冲突；53题隐藏文件名条件不在题面；38题参考用全局OLS替代GWR。33题规定输入distances.pkl已含旅行时间，属于题库自身的信息泄漏风险。reviews.json保留逐题证据，不能将原CHECK、文件存在或工具步骤一致直接作为专业正确率。当前5项待定需方法或业务语义复核；本轮没有实施V1或第二轮模型实验。
