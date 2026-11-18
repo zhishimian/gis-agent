@@ -26,4 +26,4 @@ Cross-process results need files; memory layers only live in their process. A di
 Pure GeoPandas/Shapely/Matplotlib scripts do not need QgsApplication. Print logs normally; structured results go to GIS_AGENT_RESULT_PATH. Files from a failed execution remain diagnostic until the affected work succeeds.
 
 Direct tool results have outputs, for example `{"ok":true,"outputs":{"OUTPUT":"/work/result.gpkg"}}`. The script helper returns Processing's dictionary; run_python_script wraps it in result, for example `{"ok":true,"returncode":0,"result":{"OUTPUT":"/work/result.gpkg"}}`. Reuse these paths and inspect real layers rather than guessing names.
-Use host metadata/field tools for basic checks. For errors follow the exact traceback and [execution gotchas](../../skills/gis-spatial-analysis/references/gotchas.md).
+Use host metadata/field tools for basic checks. For errors follow the exact traceback and [execution gotchas](../../skills/gis-data-io-and-staging/references/gotchas.md).

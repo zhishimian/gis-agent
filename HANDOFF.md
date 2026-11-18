@@ -301,3 +301,15 @@ GABench原工作区有大量修改，保留原状。50个LFS指针的对象已�
 2026-11-18（续）：补齐 Carbon 蓝图第 8、9 两项底座尾巴（0 收费调用）：
 1. **按模型可用输入窗口 90% 触发主动压缩**：借鉴 `learn-claude-code` 上下文水位设计并在 `ContextConfig` 新增 `compact_ratio: float = 0.90`（支持 `GIS_AGENT_COMPACT_RATIO` 覆写）。`ContextManager.prepare` 在超过 `int(request_token_limit * compact_ratio)` 且存在可折叠旧工具批次时提前触发摘要压缩，不再与固定 `10k/100k` 魔数绑定；低于 90% 时保持前缀不变以保护 KV Cache。
 2. **脱离 Conda 的独立 `uv` 运行验证**：更新测试套件中 5 处残留 `langgraph` 校验器导入改用 `SqliteCheckpointer`/`MemoryCheckpointer`，将 `.venv/` 加入 `.gitignore`；实机执行 `uv sync --extra cli --extra dev --extra geo` 在独立 `.venv` 装齐 42 个完整科学计算包并全量脱离 Conda 运行 `tests/` 与 `benchmarks/geoagentbench/test_runner.py`（`-k "not live"`），**122 项全部通过**（`152.83s`），含无桌面 QGIS 条件下用独立 GeoPython 完成 `inspect_data` 与 `export_figure` 成图验收。
+
+## V9.0.2 空间 Skills 拆分升级、自动体征注入与测试集收口
+
+2026-11-18（续）：设计文档为`docs/v9.0.2-spatial-skills-and-test-consolidation-design.md`（0 收费调用，未改动`gis-verification`与`gis-cartography`核心策略及绘图运行时）：
+1. **零轮次自动空间体征与运行能力发现**：
+   - `gis_agent/runtime/inspect_fast.py`新增`attach_spatial_vitals`与`--vitals`跨解释器探针，接入`run_python_script`（新产物项附带可选`outputs[].spatial`）和`run_qgis_algorithm`（附带可选`spatial_vitals`，保持既有`outputs`端口映射字典兼容性），每次最多摘要前 3 个空间文件（CRS/单位、要素数或像元网格、`dtype`、`nodata`、`valid_ratio`、极值与无效几何抽样数），不做业务结论判定。
+   - `gis_agent/runtime/probe.py`新增缓存式`runtime_capabilities(launcher, has_qgis_process)`，`agent.py`与`application.py`将其写入末尾动态`business`字段以保护前缀 KV Cache；同时在`qgis_python.py`中为非`.bat`/`.cmd`的独立 Python 解释器剔除宿主机残留`PROJ_LIB`/`PROJ_DATA`/`GDAL_DATA`变量，避免外部 PostGIS/PROJ 数据库污染内置轮子坐标系解析。
+2. **7 领域 Skills 拆分与双环境路由**：
+   - 原单一`gis-spatial-analysis`拆分为 5 个垂直 Skill，与保留的`gis-verification`、`gis-cartography`合计 **7 个 Skills**：`gis-data-io-and-staging`（多图层 I/O、`pyogrio`/DuckDB 下推与分阶段持久化）、`gis-vector-and-network`（CRS 分离、多重连接、Halo 瓦片分块与有向图路网可达/选址）、`gis-raster-and-imagery`（网格对齐、NDVI/SAVI 定标量纲、分窗 Zonal Stats 与配准可信度，附`raster_align_index.py`）、`gis-terrain-and-hydrology`（DEM/DSM 分离、GRASS/ESRI D8 编码、Kahn 拓扑汇流与连通淹没容积，附`hydrology_routing.py`）和`gis-spatial-statistics`（Tier B `esda`/`libpysal`/`pykrige`/`sklearn` 与 Tier A `scipy`/`numpy` 双路由降级及空间块交叉验证，附`spatial_stats_examples.py`）。全部跨引用路径、26 条`tests/fixtures/skills_applicability.json`用例均同步更新并在`.venv`（Tier B）及桌面 QGIS（Tier A）实测通过。
+3. **测试集收口与快慢分层**：
+   - 将原零散版本测试文件合并收敛为 4 个域模块（`test_core_loop.py`、`test_runtime_and_tools.py`、`test_skills_and_cartography.py`、`test_adapters.py`）配合`benchmarks/geoagentbench/test_runner.py`（共 127 项：126 离线 + 1 live）。在`pyproject.toml`与`tests/conftest.py`注册`slow`/`live`标记。
+   - 本机`.venv`验证：快速层`-m "not slow and not live"`通过 **81 passed, 46 deselected**（`27.05s`）；`tests/`全部 4 个域模块共 115 项（含全部真实 QGIS 集成测试）与新增 V9.0.2 单测/Skill 示例全数通过；`benchmarks/geoagentbench/test_runner.py`单独重跑 10 项全数通过（`6.86s`，此前全量并跑时第 162 行曾偶发一次 Windows `worker.lock` 并发写锁竞争`PermissionError`）。

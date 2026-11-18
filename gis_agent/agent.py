@@ -65,6 +65,7 @@ class Agent:
     on_event: EventCallback | None = None
     cancel_event: Event | None = None
     workspace_context: dict[str, Any] | None = None
+    runtime_capabilities: dict[str, Any] | None = None
     graph: AgentLoopRunner = field(init=False, repr=False)
     messages: list[dict[str, Any]] = field(init=False, repr=False)
 
@@ -216,6 +217,8 @@ class Agent:
         }
         if self.workspace_context:
             business["workspace_context"] = self.workspace_context
+        if self.runtime_capabilities:
+            business["runtime_capabilities"] = self.runtime_capabilities
         latest = self.messages[business["latest_user_message"]]
         if latest.get("in_reply_to"):
             business["answer_to_request"] = latest["in_reply_to"]

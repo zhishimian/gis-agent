@@ -7,7 +7,7 @@ delivery. Image review and these small data facts complement each other.
 Reuse established analysis evidence. Check only new display transforms and encodings unless a defect exposes an analytical gap.
 
 1. Read actual layer/field/CRS/extent facts. For overlays compare a known anchor; for rasters inspect transform, NoData and resampling.
-   Check the analytical source's confidence and mask before plotting. A centered image can still be ungeoreferenced. Mask finite NoData sentinels before profiles, color limits and smoothing. A conditioned DEM can differ from the engineering surface. Use the [shared terrain reference](../../gis-spatial-analysis/references/terrain-imagery.md) when those facts are uncertain.
+   Check the analytical source's confidence and mask before plotting. A centered image can still be ungeoreferenced. Mask finite NoData sentinels before profiles, color limits and smoothing. A conditioned DEM can differ from the engineering surface. Use the [shared terrain reference](../../gis-terrain-and-hydrology/references/terrain-hydrology.md) when those facts are uncertain.
 2. Verify that mapping, classes, units and legend share the same semantics. Keep zero distinct from missing; comparable panels share the necessary norm/extent.
 3. Inspect the current whole PNG/preview with an available image reader. Check expected objects, position, layer visibility, useful extent, legibility and unnecessary formulas/technical text. Inspect dense labels against points and links; correct coordinates and high zorder alone cannot establish visibility.
 4. Crop only an uncertain legend, dense region or label. Fix related observed defects together. Stop when remaining differences do not affect interpretation or the requested quality.

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from gis_agent.persistence.evidence import file_digest
 from gis_agent.persistence.json import truncate_log
+from gis_agent.runtime.inspect_fast import attach_spatial_vitals
 from gis_agent.runtime.paths import import_root, package_resource
 from gis_agent.runtime.runner import collect_outputs, extract_explicit_paths, run_process
 from gis_agent.tools.base import Tool
@@ -52,10 +53,16 @@ def run_python_script(
     execution_guide = package_resource("integrations", "qgis", "execution.md")
     effective_watch = watch_roots or (script.parent,)
 
+    sub_env = dict(os.environ)
+    # Strip host PROJ/GDAL vars for plain Python interpreters so bundled wheels use their matching proj.db.
+    if launcher.suffix.lower() not in {".bat", ".cmd"}:
+        for var in ("PROJ_LIB", "PROJ_DATA", "GDAL_DATA"):
+            sub_env.pop(var, None)
+
     outcome = run_process(
         [str(launcher), "-B", str(entry)],
         cwd=script.parent,
-        env=os.environ | {
+        env=sub_env | {
             "PYTHONIOENCODING": "utf-8",
             "PYTHONDONTWRITEBYTECODE": "1",
             "QT_QPA_PLATFORM": "offscreen",
@@ -88,6 +95,8 @@ def run_python_script(
         item for item in outputs
         if Path(item["path"]) != script and not Path(item["path"]).is_relative_to(run_log_dir)
     ]
+    if outcome["status"] == "succeeded" and outputs:
+        attach_spatial_vitals(outputs, launcher)
 
     stderr_raw = stderr_path.read_text(encoding="utf-8", errors="replace")
     stdout_raw = stdout_path.read_text(encoding="utf-8", errors="replace")

@@ -5,6 +5,8 @@
 独立标准GIS操作可用search_qgis_tools查询算法ID与参数说明，再用run_qgis_algorithm执行；批量、连续运算或自定义逻辑可自由使用Python Processing、PyQGIS、GeoPandas及科学计算库。
 已查明准确算法ID和参数时直接复用，不重复检索。
 Python脚本由隔离进程执行，支持超时保护。Processing/PyQGIS初始化见run_python_script说明中的共享参考，保留真实退出状态。
+运行能力见动态状态 `runtime_capabilities`（`has_qgis`、`tier_b_available`）；优先使用当前环境已安装库，Tier B 库不可用时选用 Skill 的 Tier A 替代实现。
+工具返回的新产物会自动附带客观体征 `outputs[].spatial` 或 `spatial_vitals`（CRS、要素数/像元尺寸、`nodata`、`valid_ratio`、极值），执行后先核对再推进后续分析或交付。
 非平凡分析优先参考相关Skill的已验证代码、环境约定和反例，再组合自己的方法；只读当前需要的资源。简单操作可直接执行。
 昂贵或容易返工的计算按稳定输入输出保存阶段成果，将最终导出与计算分开。静态制图读取gis-cartography，使用Matplotlib、GeoPandas和Rasterio。
 

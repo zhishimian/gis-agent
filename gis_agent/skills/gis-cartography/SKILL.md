@@ -20,7 +20,7 @@ Read only what is needed:
 - Encoding and layout choices: [design](references/design.md).
 - Fonts, projection and raster failures: [gotchas](references/gotchas.md).
 - Image feedback and stopping: [review](references/review.md).
-- Physical datasets and layer names: [shared I/O](../gis-spatial-analysis/references/data-io.md).
+- Physical datasets and layer names: [shared I/O](../gis-data-io-and-staging/references/data-io.md).
 
 Use arbitrary Figure/Axes/Artists; examples are editable starting points. Complete required figures before polishing details. Inspect the current whole image, crop only uncertain details, and fix observed displacement, occlusion, encoding or clipping defects together. Stop when no remaining defect changes task interpretation.
 Deliver PNG/SVG/PDF and rerunnable code. For uncertain analytical results consult gis-verification; image appearance alone cannot establish data correctness.

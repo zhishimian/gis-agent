@@ -60,7 +60,7 @@ check_spatial_relation measures `source relation reference`. Both CRSs must be v
 
 Match the evidence to the claim:
 
-- A feasible route whose length equals its stored cost may still be longer than an alternative. For a shortest-route claim, inspect parallel-edge preservation and compare one consequential source/destination against a candidate alternative or another suitable routing implementation. The [parallel-edge counterexample](../../gis-spatial-analysis/scripts/parallel_edges.py) demonstrates this gap. Use the same direction, attachment and impedance semantics.
+- A feasible route whose length equals its stored cost may still be longer than an alternative. For a shortest-route claim, inspect parallel-edge preservation and compare one consequential source/destination against a candidate alternative or another suitable routing implementation. The [parallel-edge counterexample](../../gis-vector-and-network/scripts/parallel_edges.py) demonstrates this gap. Use the same direction, attachment and impedance semantics.
 - A normal-looking field range can survive an inverted formula. Substitute raw fields into a nondegenerate case and check the intended quantity/unit.
 - Population totals remain unchanged if two source IDs exchange spatial assignments. Combine conservation with keyed source/result and location checks where assignment matters.
 - Valid geometries can still use the wrong spatial predicate or omit a required part. Inspect a boundary/multipart counterexample chosen from the task.
@@ -77,7 +77,7 @@ For registration, request actual correspondence evidence, transform model, resid
 
 For catchments, challenge a nested outlet pair. Complete upstream areas can overlap; partition labels cannot directly supply every outlet's full area. Compare to compatible flow accumulation, including the self-cell and grid-area conventions. For profiles, slope and volume, check which DEM was used and whether filling changed the relevant elevations. Inspect NoData at borders and bilinear neighborhoods; a valid raster CRS does not certify its elevation semantics.
 
-The shared [terrain reference](../../gis-spatial-analysis/references/terrain-imagery.md) contains execution details and a tiny runnable counterexample. These checks establish specific failure signals; they do not certify an entire basin or storage calculation. Prefer a consequential counterexample and coverage facts before duplicating a complete pipeline.
+The shared [terrain reference](../../gis-terrain-and-hydrology/references/terrain-hydrology.md) contains execution details and a tiny runnable counterexample. These checks establish specific failure signals; they do not certify an entire basin or storage calculation. Prefer a consequential counterexample and coverage facts before duplicating a complete pipeline.
 
 ## Numerical precision
 

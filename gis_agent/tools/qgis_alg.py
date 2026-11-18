@@ -4,6 +4,7 @@ from typing import Any
 
 from gis_agent.integrations.qgis.adapter import execute_algorithm
 from gis_agent.integrations.qgis.client import QGISClient
+from gis_agent.runtime.inspect_fast import SPATIAL_EXTS, attach_spatial_vitals
 from gis_agent.tools.base import Tool
 
 
@@ -59,8 +60,21 @@ def run_qgis_algorithm(
     effective_cancel = cancel_event or client.cancel_event
     if timeout_sec != client.timeout or effective_cancel is not client.cancel_event:
         timed_client = QGISClient(client.launcher, timeout=timeout_sec, cancel_event=effective_cancel)
-        return execute_algorithm(timed_client, algorithm_id, definitions, **call_args)
-    return execute_algorithm(client, algorithm_id, definitions, **call_args)
+        result = execute_algorithm(timed_client, algorithm_id, definitions, **call_args)
+    else:
+        result = execute_algorithm(client, algorithm_id, definitions, **call_args)
+    if result.get("ok") and isinstance(result.get("outputs"), dict):
+        candidates = [
+            {"key": key, "path": val, "exists": True, "empty": False}
+            for key, val in result["outputs"].items()
+            if isinstance(val, str) and Path(val).suffix.lower() in SPATIAL_EXTS and Path(val).is_file()
+        ]
+        if candidates:
+            attach_spatial_vitals(candidates, client.launcher)
+            vitals = {item["key"]: item["spatial"] for item in candidates if "spatial" in item}
+            if vitals:
+                result["spatial_vitals"] = vitals
+    return result
 
 
 def make_run_qgis_tool(

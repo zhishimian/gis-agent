@@ -56,3 +56,9 @@ gis-agent-mcp = "gis_agent.adapters.harness_mcp:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["gis_agent"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: tests requiring external QGIS subprocesses, heavy assets, or slow multi-process runs",
+    "live: tests calling real external LLM APIs",
+]

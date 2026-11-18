@@ -29,6 +29,7 @@ from gis_agent.persistence.interaction import latest_outcome
 from gis_agent.persistence.json import json_text
 from gis_agent.persistence.sessions import SessionStore
 from gis_agent.prompts import render_prompt
+from gis_agent.runtime.probe import runtime_capabilities
 from gis_agent.skills import skill_index
 from gis_agent.tools.base import Tool
 from gis_agent.tools.builtin import builtin_tools
@@ -283,6 +284,10 @@ class AgentFactory:
             on_event=on_event,
             cancel_event=cancel_event,
             workspace_context=ws_dict or None,
+            runtime_capabilities=runtime_capabilities(
+                python_launcher,
+                has_qgis_process=(self.qgis is not None),
+            ),
         )
 
 

@@ -1,3 +1,4 @@
+from functools import lru_cache
 import importlib.metadata
 import importlib.util
 import json
@@ -76,3 +77,46 @@ def probe_launcher(launcher: Path, timeout_sec: int = 15) -> dict[str, Any]:
         return {"executable": str(launcher), "ok": False, "error": proc.stderr[-500:]}
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip().startswith("{")]
     return json.loads(lines[-1]) if lines else {"executable": str(launcher), "ok": False}
+
+
+TIER_B_PACKAGES = (
+    "duckdb",
+    "esda",
+    "libpysal",
+    "mapclassify",
+    "netCDF4",
+    "pykrige",
+    "rasterstats",
+    "scikit-learn",
+)
+
+
+@lru_cache(maxsize=16)
+def _cached_runtime_capabilities(launcher_str: str, has_qgis_process: bool) -> dict[str, Any]:
+    probe = probe_launcher(Path(launcher_str))
+    packages = probe.get("packages") or {}
+    has_qgis = bool(has_qgis_process or probe.get("has_qgis"))
+    tier_b = [pkg for pkg in TIER_B_PACKAGES if pkg in packages]
+    if has_qgis and tier_b:
+        mode = "dual"
+    elif tier_b:
+        mode = "tier_b"
+    elif has_qgis:
+        mode = "tier_a_qgis"
+    else:
+        mode = "core_only"
+    return {
+        "mode": mode,
+        "has_qgis": has_qgis,
+        "tier_b_available": tier_b,
+    }
+
+
+def runtime_capabilities(launcher: Path, *, has_qgis_process: bool = False) -> dict[str, Any]:
+    if not launcher.is_file():
+        return {
+            "mode": "qgis_only" if has_qgis_process else "minimal",
+            "has_qgis": has_qgis_process,
+            "tier_b_available": [],
+        }
+    return dict(_cached_runtime_capabilities(str(launcher.expanduser().resolve()), has_qgis_process))

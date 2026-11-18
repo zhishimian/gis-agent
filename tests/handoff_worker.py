@@ -10,8 +10,7 @@ socket.socket.connect=lambda *_: (_ for _ in ()).throw(AssertionError('offline w
 from gis_agent.persistence.checkpoints import SqliteCheckpointer as SqliteSaver
 from gis_agent.persistence.sessions import SessionStore
 from gis_agent.tools.base import Tool
-from test_v84 import build
-from test_acceptance import reply
+from conftest import build, reply
 
 root=Path(sys.argv[1]);root.mkdir(exist_ok=True)
 phase=sys.argv[2];store=SessionStore(root/'sessions','process')

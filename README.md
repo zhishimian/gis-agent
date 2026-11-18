@@ -1,4 +1,4 @@
-# GIS-Agent V9.0.1
+# GIS-Agent V9.0.2
 
 单 Agent GIS 助手。纯 Python 状态机（`AgentLoopRunner`）与标准库 SQLite 检查点（`SqliteCheckpointer`）管理模型与工具往返，核心运行时零 `langgraph` / `tokenizers` 依赖。支持独立 Python（`uv` 锁定环境）与 QGIS Processing / PyQGIS 双后端执行空间计算，Matplotlib、GeoPandas、Rasterio 负责静态制图。
 
@@ -25,17 +25,21 @@ python main.py
 - `harness_mcp.py`：面向外部通用 Coding Agent（Claude Code / Codex / Cursor）的标准 STDIO MCP 服务端（`python -m gis_agent.adapters.harness_mcp` 或 `gis-agent-mcp`），零内部循环依赖，直接暴露内环空间探针、QGIS 算法网关与专业 Skills。
 - `stubs.py`：QGIS 插件端与独立桌面端边界协议（`WorkspaceContext` 画布上下文注入、`EventCallback` 实时产物事件流、`Conversation.request_stop()` 线程安全子进程树中断）。
 
-记录保存在 `sessions/`，成果保存在 `outputs/`。输入数据保持原样。三个 Skills 按需读取：
+记录保存在 `sessions/`，成果保存在 `outputs/`。输入数据保持原样。七大领域 Skills 按需读取（单工具可解任务不强读）：
 
-- [空间分析](gis_agent/skills/gis-spatial-analysis/SKILL.md)：执行路线、数据流、栅格、水文、路网与 API 方法。
+- [I/O 与阶段执行](gis_agent/skills/gis-data-io-and-staging/SKILL.md)：多图层容器读写、`pyogrio`/DuckDB 下推过滤、业务键保留与稳定阶段文件拆解。
+- [矢量与路网](gis_agent/skills/gis-vector-and-network/SKILL.md)：源/分析/交付 CRS 分离、多重连接与分块晕区叠加、Primal MultiDiGraph 有向路网可达与选址。
+- [栅格与影像](gis_agent/skills/gis-raster-and-imagery/SKILL.md)：辐射定标（NDVI vs SAVI/EVI 量纲）、参考网格对齐重采样、`block_windows` 分窗流式计算、Zonal Stats 与配准可信度。
+- [地形与水文](gis_agent/skills/gis-terrain-and-hydrology/SKILL.md)：DEM/DSM/物体高度分离、工程地形 vs 填洼水文表面、GRASS/ESRI D8 流向编码差异、嵌套流域 vs 子区切分及连通蓄水量。
+- [空间统计与插值](gis_agent/skills/gis-spatial-statistics/SKILL.md)：全局 Moran's I、Kriging 变异函数与空间块交叉验证（支持 `esda`/`libpysal`/`pykrige` Tier B 与 `scipy`/`numpy` Tier A 双路由降级）。
 - [专业核查](gis_agent/skills/gis-verification/SKILL.md)：针对实际主张取得必要证据。
 - [专题制图](gis_agent/skills/gis-cartography/SKILL.md)：自由 Python 制图和图像回看。
 
-## 静态工具协议与快速探针
+## 静态工具协议、运行能力注入与快速探针
 
-- **静态 Schema（KV Cache 友好）**：检索 `search_qgis_tools` 返回算法参数契约，执行统一走 `run_qgis_algorithm(algorithm_id, parameters, project_path)`，运行时动态校验必填键与未知参数，不再向请求注入动态工具列表。
-- **头信息与概览抽样探针**：`inspect_data` 优先通过 `pyogrio` / `rasterio` 毫秒级读取矢量图层目录、CRS 单位、栅格波段 `dtype` / `colorinterp` / `nodata` / `scale` / `offset` 与 `256×256` 概览值域，必要时回退 PyQGIS。
-- **执行器安全回执**：子进程超时整树回收（`taskkill /F /T`）、首尾双向保留错误堆栈、递归扫描子目录新增产物、写入目录边界拦截、`finish_task` 零字节产物拦截，以及 JSON 原子替换 Windows 瞬时句柄重试。
+- **静态 Schema（KV Cache 友好）**：检索 `search_qgis_tools` 返回算法参数契约，执行统一走 `run_qgis_algorithm(algorithm_id, parameters, project_path)`，运行时动态校验必填键与未知参数，并在尾部动态状态注入缓存的 `runtime_capabilities`（`has_qgis` / `tier_b_available`）。
+- **快速探针与自动空间体征**：`inspect_data` 与 `run_python_script`/`run_qgis_algorithm` 自动为新产出文件附带轻量级客观体征 `outputs[].spatial` / `spatial_vitals`（CRS 单位、要素数/像元网格、`dtype`、`nodata`、`valid_ratio`、极值与无效几何抽样数），零额外模型轮次即可核对异常。
+- **执行器安全回执**：子进程超时整树回收（`taskkill /F /T`）、首尾双向保留错误堆栈、递归扫描子目录新增产物、写入目录边界拦截、`finish_task` 零字节产物拦截、Plain Python 隔离外部冲突 `PROJ_LIB`/`GDAL_DATA` 环境变量，以及 JSON 原子替换 Windows 瞬时句柄重试。
 - `execution_history` 按需查当前 Session 的真实参数、脚本快照、结果和错误。历史 0 调用的 V8.1 `local_replay` 模块已归档至 `archive/v8_replay/`。
 
 ## 等待用户与继续
@@ -54,7 +58,11 @@ python main.py --session my-task waiting
 DeepSeek 默认 `max_tokens=393216`。配置入口为 `GIS_AGENT_MAX_OUTPUT_TOKENS`。输入预算同时为输出和协议留出空间。截断响应原件保留在 Session，其整批工具调用均拒绝执行。
 
 ```powershell
-python -B -m pytest tests -k "not live" -v -p no:cacheprovider
+# 日常快速本地检查（秒级，跳过外部 QGIS 与 live API）
+python -B -m pytest tests benchmarks/geoagentbench/test_runner.py -m "not slow and not live" -v -p no:cacheprovider
+
+# 全量离线验证（含全部真实 QGIS 集成测试与独立 uv 运行环境验证）
+python -B -m pytest tests benchmarks/geoagentbench/test_runner.py -k "not live" -v -p no:cacheprovider
 ```
 
 本地离线测试无需 HuggingFace `tokenizers` 缓存；若配置 `GIS_AGENT_QGIS_DIR` 则运行全部真实 QGIS 集成测试。带 `live` 的测试会连接真实模型，需单独授权运行。

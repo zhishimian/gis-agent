@@ -11,7 +11,7 @@ Choose the smallest evidence that can expose a consequential error. Check a new 
 - Metadata, fields, key duplicates and known foreign-key relations: reuse host inspection tools; exact examples and limitations are in [checks](references/checks.md).
 - Cross-version key coverage or multiplicity: [identity_audit.py](scripts/identity_audit.py).
 - Population/quantity coverage and residuals: [allocation_balance.py](scripts/allocation_balance.py), with the [balance pattern](references/checks.md#allocation-and-delivery).
-- Network access, direction and unreachable evidence: [shared network reference](../gis-spatial-analysis/references/network-access.md).
+- Network access, direction and unreachable evidence: [shared network reference](../gis-vector-and-network/references/network-access.md).
 - Multipart/hole facts and selected planar distances: [geometry_facts.py](scripts/geometry_facts.py).
 - Numerical precision and claim-specific counterexamples: [checks](references/checks.md#numerical-precision), with [precision_example.py](scripts/precision_example.py).
 - Held-out prediction and terrain/registration evidence: [checks](references/checks.md#prediction-and-terrain-evidence), including a [split counterexample](scripts/validation_split.py).
