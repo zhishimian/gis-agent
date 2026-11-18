@@ -11,6 +11,9 @@ PROJECT = Path(os.environ['GAB_PROJECT']).resolve()
 EXTRA = Path(os.environ['GAB_EXTRA']).resolve()
 READ = [WORK, PROJECT / 'gis_agent', Path('E:/exe/qgis'), Path(sys.base_prefix), EXTRA,
         Path(os.environ['APPDATA']) / 'Python', Path(os.environ['APPDATA']) / 'QGIS', Path('C:/Windows')]
+for _item in os.environ.get('GAB_READ_EXTRA', '').split(';'):
+    if _item.strip():
+        READ.append(Path(_item.strip()).resolve())
 WRITE = [WORK / 'output', WORK / 'temp', WORK / 'scripts']
 
 

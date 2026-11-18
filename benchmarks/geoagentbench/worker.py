@@ -16,7 +16,7 @@ def execute(work, run):
     os.environ['HF_HUB_OFFLINE'] = '1'
     os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
     from openai import OpenAI, DefaultHttpxClient
-    from langgraph.checkpoint.sqlite import SqliteSaver
+    from gis_agent.persistence.checkpoints import SqliteCheckpointer
     from gis_agent.application import AgentFactory
     from gis_agent.config import AppConfig
     from gis_agent.integrations.llm import chat, make_token_counter, request_view
@@ -100,7 +100,7 @@ def execute(work, run):
         store = SessionStore(config.session_root, 'task')
         store.root.mkdir(parents=True, exist_ok=True)
         messages = store.read_record()
-        with SqliteSaver.from_conn_string(str(record / 'checkpoint.sqlite')) as saver:
+        with SqliteCheckpointer.from_conn_string(str(record / 'checkpoint.sqlite')) as saver:
             prompt = render_prompt('system.j2', output_dir=work / 'output', supports_images=True,
                                    supports_memory=False, skills=skill_index())
             (record / 'system_prompt.txt').write_text(prompt, encoding='utf-8')
