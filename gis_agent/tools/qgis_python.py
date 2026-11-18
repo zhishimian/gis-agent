@@ -1,12 +1,13 @@
 import json
 import os
-import subprocess
 from functools import partial
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from gis_agent.persistence.evidence import file_digest
+from gis_agent.persistence.json import truncate_log
+from gis_agent.runtime.runner import collect_outputs, extract_explicit_paths, run_process
 from gis_agent.tools.base import Tool
 
 
@@ -15,82 +16,131 @@ def run_python_script(
     log_dir: Path,
     script_path: str,
     arguments: list[str] | None = None,
-    *, font_files: tuple[Path, ...] = (),
+    *,
+    font_files: tuple[Path, ...] = (),
+    timeout_sec: int = 300,
+    watch_roots: tuple[Path, ...] = (),
+    protected_paths: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     script = Path(script_path).expanduser().resolve()
     if not script.is_file() or script.suffix.lower() != ".py":
-        return {"ok": False, "error": f"Python 脚本不存在或扩展名不是 .py：{script}"}
+        return {"ok": False, "status": "failed", "error": f"Python 脚本不存在或扩展名不是 .py：{script}"}
     if not launcher.is_file():
-        return {"ok": False, "error": f"QGIS Python 启动器不存在：{launcher}"}
+        return {"ok": False, "status": "failed", "error": f"Python 启动器不存在：{launcher}"}
     if arguments is not None and (not isinstance(arguments, list) or any(not isinstance(item, str) for item in arguments)):
-        return {"ok": False, "error": "arguments 必须是字符串列表。"}
+        return {"ok": False, "status": "failed", "error": "arguments 必须是字符串列表。"}
+    if not isinstance(timeout_sec, int) or not 5 <= timeout_sec <= 3600:
+        return {"ok": False, "status": "failed", "error": "timeout_sec 必须在 5 到 3600 秒之间。"}
 
-    log_dir = (log_dir / uuid4().hex).resolve()
-    log_dir.mkdir(parents=True, exist_ok=True)
-    snapshot = log_dir / "script.py"
+    run_log_dir = (log_dir / uuid4().hex).resolve()
+    run_log_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = run_log_dir / "script.py"
     snapshot.write_bytes(script.read_bytes())
     script_hash = file_digest(snapshot)
-    stdout_path = log_dir / "stdout.txt"
-    stderr_path = log_dir / "stderr.txt"
-    result_path = log_dir / "result.json"
-    request_path = log_dir / "request.json"
-    request_path.write_text(json.dumps({"script": str(script), "arguments": arguments or []}, ensure_ascii=False), encoding="utf-8")
+    stdout_path = run_log_dir / "stdout.txt"
+    stderr_path = run_log_dir / "stderr.txt"
+    result_path = run_log_dir / "result.json"
+    request_path = run_log_dir / "request.json"
+    request_path.write_text(
+        json.dumps({"script": str(script), "arguments": arguments or []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
     entry = Path(__file__).resolve().parents[1] / "integrations" / "qgis" / "script_entry.py"
-    with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-        result = subprocess.run(
-            [str(launcher), "-B", str(entry)],
-            cwd=script.parent,
-            env=os.environ | {
-                "PYTHONIOENCODING": "utf-8",
-                "PYTHONDONTWRITEBYTECODE": "1",
-                "QT_QPA_PLATFORM": "offscreen",
-                "MPLBACKEND": "Agg",
-                "GIS_AGENT_PROJECT_ROOT": str(Path(__file__).resolve().parents[2]),
-                "GIS_AGENT_SCRIPT_REQUEST": str(request_path),
-                "GIS_AGENT_RESULT_PATH": str(result_path),
-                **({"GIS_AGENT_FONT_FILES": ";".join(str(path) for path in font_files)} if font_files else {}),
-            },
-            stdout=stdout,
-            stderr=stderr,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+    effective_watch = watch_roots or (script.parent,)
+
+    outcome = run_process(
+        [str(launcher), "-B", str(entry)],
+        cwd=script.parent,
+        env=os.environ | {
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "QT_QPA_PLATFORM": "offscreen",
+            "MPLBACKEND": "Agg",
+            "GIS_AGENT_PROJECT_ROOT": str(Path(__file__).resolve().parents[2]),
+            "GIS_AGENT_SCRIPT_REQUEST": str(request_path),
+            "GIS_AGENT_RESULT_PATH": str(result_path),
+            **({"GIS_AGENT_FONT_FILES": ";".join(str(path) for path in font_files)} if font_files else {}),
+        },
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        timeout_sec=timeout_sec,
+        watch_roots=effective_watch,
+        protected_paths=protected_paths,
+    )
 
     changed = not script.is_file() or file_digest(script) != script_hash
-    structured = {}
+    structured: dict[str, Any] = {}
     if result_path.is_file():
         try:
             structured = {"result": json.loads(result_path.read_text(encoding="utf-8"))}
         except json.JSONDecodeError as error:
             structured = {"error": f"结构化结果不是有效JSON：{error}"}
         structured.update(result_path=str(result_path), result_sha256=file_digest(result_path))
-    stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")
-    if result.returncode and "ModuleNotFoundError: No module named 'processing'" in stderr_text:
+
+    explicit = extract_explicit_paths(structured.get("result"))
+    outputs = collect_outputs(outcome["before_outputs"], outcome["after_outputs"], explicit)
+    # 过滤掉脚本自身与日志目录
+    outputs = [
+        item for item in outputs
+        if Path(item["path"]) != script and not Path(item["path"]).is_relative_to(run_log_dir)
+    ]
+
+    stderr_raw = stderr_path.read_text(encoding="utf-8", errors="replace")
+    stdout_raw = stdout_path.read_text(encoding="utf-8", errors="replace")
+    if outcome["returncode"] and "ModuleNotFoundError: No module named 'processing'" in stderr_raw:
         structured["hint"] = f"Processing初始化入口见：{Path(__file__).resolve().parents[1] / 'integrations/qgis/execution.md'}"
+    if outcome["timed_out"]:
+        structured["error"] = f"脚本执行超过 {timeout_sec} 秒超时限制，进程树已终止。"
+    if outcome["tampered_inputs"]:
+        structured["error"] = f"检测到受保护输入文件被修改：{outcome['tampered_inputs']}"
+
+    ok = (
+        outcome["status"] == "succeeded"
+        and not changed
+        and "error" not in structured
+        and not (isinstance(structured.get("result"), dict) and structured["result"].get("ok") is False)
+    )
+    status = "timed_out" if outcome["timed_out"] else ("succeeded" if ok else "failed")
+
     return {
-        "ok": result.returncode == 0 and not changed and "error" not in structured
-              and not (isinstance(structured.get("result"), dict) and structured["result"].get("ok") is False),
-        "returncode": result.returncode,
-        "stdout": stdout_path.read_text(encoding="utf-8", errors="replace")[-2000:] if result.returncode or "result" not in structured else "",
-        "stderr": stderr_text[-3000:],
+        "ok": ok,
+        "status": status,
+        "timed_out": outcome["timed_out"],
+        "elapsed_ms": outcome["elapsed_ms"],
+        "returncode": outcome["returncode"],
+        "outputs": outputs,
+        "stdout": truncate_log(stdout_raw, 2500) if not ok or "result" not in structured else "",
+        "stderr": truncate_log(stderr_raw, 3500),
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
-        "script_snapshot": str(snapshot), "script_sha256": script_hash, "script_changed": changed,
-        "stdout_sha256": file_digest(stdout_path), "stderr_sha256": file_digest(stderr_path),
+        "script_snapshot": str(snapshot),
+        "script_sha256": script_hash,
+        "script_changed": changed,
+        "stdout_sha256": file_digest(stdout_path),
+        "stderr_sha256": file_digest(stderr_path),
         **structured,
     }
 
 
 def inspect_data(
-    launcher: Path, log_dir: Path, source: str | None = None, sources: list[str] | None = None,
+    launcher: Path,
+    log_dir: Path,
+    source: str | None = None,
+    sources: list[str] | None = None,
 ) -> dict[str, Any]:
-    if (source is None) == (sources is None) or (sources is not None and (
-        not sources or any(not isinstance(item, str) for item in sources)
-    )):
+    if (source is None) == (sources is None) or (
+        sources is not None and (not sources or any(not isinstance(item, str) for item in sources))
+    ):
         return {"ok": False, "error": "请提供 source，或非空 sources 列表，二者选一。"}
-    script = Path(__file__).resolve().parents[1] / "integrations" / "qgis" / "inspect_data.py"
+    fast_script = Path(__file__).resolve().parents[1] / "runtime" / "inspect_fast.py"
+    script = fast_script if fast_script.is_file() else Path(__file__).resolve().parents[1] / "integrations" / "qgis" / "inspect_data.py"
     result = run_python_script(launcher, log_dir, str(script), [source] if source is not None else ["--batch", *sources])
     if result["ok"]:
-        result["data"] = result.pop("result") if "result" in result else json.loads(Path(result["stdout_path"]).read_text(encoding="utf-8"))
+        result["data"] = (
+            result.pop("result")
+            if "result" in result
+            else json.loads(Path(result["stdout_path"]).read_text(encoding="utf-8"))
+        )
         del result["stdout"]
     return result
 
@@ -100,23 +150,33 @@ def run_data_check(launcher: Path, log_dir: Path, mode: str, **parameters: Any) 
     return run_python_script(launcher, log_dir, str(script), [json.dumps({"mode": mode, **parameters}, ensure_ascii=False)])
 
 
-def make_qgis_python_tools(launcher: Path, log_dir: Path, font_files: tuple[Path, ...] = ()) -> list[Tool]:
+def make_qgis_python_tools(
+    launcher: Path,
+    log_dir: Path,
+    font_files: tuple[Path, ...] = (),
+    *,
+    watch_roots: tuple[Path, ...] = (),
+    protected_paths: tuple[Path, ...] = (),
+) -> list[Tool]:
     return [
         Tool(
             name="inspect_data",
             description=(
-                "读取 GIS 数据元信息。矢量返回字段、三条属性样例、数量、几何类型、"
-                "CRS 和范围；栅格返回尺寸、像元大小、波段、NoData、CRS 和范围。"
+                "快速读取 GIS 数据元信息与物理属性。矢量返回字段、样例、数量、几何类型、坐标轴单位、CRS、范围与几何抽检；"
+                "栅格返回尺寸、像元大小、波段类型(dtype)、颜色解释(colorinterp)、单位、缩放偏移(scales/offsets)、NoData、CRS、范围与概览抽样区间。"
                 "多图层容器先返回 layers，再用选定图层的 source 调用本工具。"
                 "批量结果在data.datasets，逐项查看ok；顶层ok只表示批量测量完成。"
-                "不进行完整几何校验或全量数值统计。"
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "source": {"type": "string", "description": "绝对数据路径或上一轮返回的图层 source。"},
-                    "sources": {"type": "array", "items": {"type": "string"}, "minItems": 1,
-                                "description": "批量读取指定数据，共用一次QGIS初始化。与source二选一。"},
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "description": "批量读取指定数据。与source二选一。",
+                    },
                 },
                 "oneOf": [{"required": ["source"]}, {"required": ["sources"]}],
                 "additionalProperties": False,
@@ -126,40 +186,72 @@ def make_qgis_python_tools(launcher: Path, log_dir: Path, font_files: tuple[Path
         Tool(
             name="run_python_script",
             description=(
-                "执行已保存的 .py 脚本，使用独立 QGIS Python 进程。"
+                "在隔离进程执行已保存的 .py 脚本，支持超时回收与递归产出文件回执。"
                 f"Processing/PyQGIS初始化及清理的正确入口见：{Path(__file__).resolve().parents[1] / 'integrations/qgis/execution.md'}。"
-                "纯GeoPandas/Shapely/Matplotlib脚本不需要QgsApplication。"
-                "工作目录为脚本所在目录，不共享上次执行的变量。"
-                "等待脚本退出，返回退出码、日志尾部和完整日志路径。"
-                "首次用 write_file 保存，修改优先用 edit_file。arguments 可传入脚本参数。"
-                "项目根路径通过GIS_AGENT_PROJECT_ROOT提供，并已加入模块搜索路径，可直接导入项目助手。"
-                "可向环境变量 GIS_AGENT_RESULT_PATH 指定的文件写JSON，返回result；stdout只作日志，不要求末行格式。"
-                "非零退出仍为失败，已写文件只作诊断；不要用os._exit(0)绕过清理。"
+                "纯GeoPandas/Shapely/Rasterio/Matplotlib脚本不需要QgsApplication。"
+                "工作目录为脚本所在目录，受信任本地执行，请勿修改原始输入数据。"
+                "可向环境变量 GIS_AGENT_RESULT_PATH 指定的文件写JSON，返回result与outputs列表；日志头尾截断，完整日志落盘。"
+                "首次用 write_file 保存，修改优先用 edit_file。不要用os._exit(0)绕过清理。"
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "script_path": {"type": "string"},
-                    "arguments": {"type": "array", "items": {"type": "string"}, "description": "JSON安全传递的字符串列表，还原为脚本sys.argv[1:]。"},
+                    "arguments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "JSON安全传递的字符串列表，还原为脚本sys.argv[1:]。",
+                    },
+                    "timeout_sec": {
+                        "type": "integer",
+                        "minimum": 5,
+                        "maximum": 3600,
+                        "description": "最大运行秒数，默认300；超时终止整个子进程树。",
+                    },
                 },
                 "required": ["script_path"],
                 "additionalProperties": False,
             },
-            function=partial(run_python_script, launcher, log_dir, font_files=font_files),
+            function=partial(
+                run_python_script,
+                launcher,
+                log_dir,
+                font_files=font_files,
+                watch_roots=watch_roots,
+                protected_paths=protected_paths,
+            ),
         ),
         Tool(
-            "summarize_fields", "统计字段空值、非空唯一值、数值范围与总量，可查稳定键和空/无效几何。samples为开头最多5条，不保证非零；duplicate_rows为超出首次出现的行数。返回位于result；ok仅表示测量成功，业务要求需看实际数值。",
-            {"type": "object", "properties": {"source": {"type": "string"},
-             "fields": {"type": "array", "items": {"type": "string"}}, "key": {"type": "string"},
-             "check_geometry": {"type": "boolean"}}, "required": ["source", "fields"], "additionalProperties": False},
+            "summarize_fields",
+            "统计字段空值、非空唯一值、数值范围与总量，可查稳定键和空/无效几何。samples为开头最多5条，不保证非零；duplicate_rows为超出首次出现的行数。返回位于result；ok仅表示测量成功，业务要求需看实际数值。",
+            {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "fields": {"type": "array", "items": {"type": "string"}},
+                    "key": {"type": "string"},
+                    "check_geometry": {"type": "boolean"},
+                },
+                "required": ["source", "fields"],
+                "additionalProperties": False,
+            },
             partial(run_data_check, launcher, log_dir, "fields"),
         ),
         Tool(
-            "check_spatial_relation", "按外键核对source几何 relation reference几何，默认intersects。两层须同一有效CRS，参照键须唯一。result返回missing_key、empty_geometry、violations和有限反例。只检查source现存对象，不发现已丢失的源ID，也不决定最优归属。",
-            {"type": "object", "properties": {"source": {"type": "string"}, "reference": {"type": "string"},
-             "foreign_key": {"type": "string"}, "reference_key": {"type": "string"},
-             "relation": {"type": "string", "enum": ["intersects", "within", "contains", "touches"]}},
-             "required": ["source", "reference", "foreign_key", "reference_key"], "additionalProperties": False},
+            "check_spatial_relation",
+            "按外键核对source几何 relation reference几何，默认intersects。两层须同一有效CRS，参照键须唯一。result返回missing_key、empty_geometry、violations和有限反例。只检查source现存对象，不发现已丢失的源ID，也不决定最优归属。",
+            {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "reference": {"type": "string"},
+                    "foreign_key": {"type": "string"},
+                    "reference_key": {"type": "string"},
+                    "relation": {"type": "string", "enum": ["intersects", "within", "contains", "touches"]},
+                },
+                "required": ["source", "reference", "foreign_key", "reference_key"],
+                "additionalProperties": False,
+            },
             partial(run_data_check, launcher, log_dir, "relations"),
         ),
     ]

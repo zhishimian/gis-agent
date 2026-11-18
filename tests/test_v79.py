@@ -189,14 +189,16 @@ def test_single_agent_buffer_can_finish_and_read_only_question_can_answer(qgis_d
     output = config.output_root / "single" / "buffer.gpkg"
     steps = iter([
         ("search_qgis_tools", {"query": "native:buffer", "limit": 1}),
-        ("qgis_native_buffer", {"INPUT": str(source), "DISTANCE": 500, "SEGMENTS": 32, "OUTPUT": str(output)}),
+        ("run_qgis_algorithm", {"algorithm_id": "native:buffer", "parameters": {"INPUT": str(source), "DISTANCE": 500, "SEGMENTS": 32, "OUTPUT": str(output)}}),
         ("summarize_fields", {"source": str(output), "fields": ["id"], "check_geometry": True}),
         ("finish_task", {"status": "completed", "summary": "成果可读，已检查几何。", "artifacts": [str(output)]}),
     ])
     calls = []
+    seen_schemas = []
     def fixed(client, model, view, schemas):
+        seen_schemas.append(json.dumps(schemas, sort_keys=True, ensure_ascii=False))
         names = {item["function"]["name"] for item in schemas}
-        assert not {"verify_task", "review_delivery", "cartograph_task", "render_map"} & names
+        assert not {"verify_task", "review_delivery", "cartograph_task", "render_map", "local_replay"} & names
         assert "gis-verification/SKILL.md" in view[0]["content"]
         name, arguments = next(steps)
         assert name in names
@@ -207,6 +209,7 @@ def test_single_agent_buffer_can_finish_and_read_only_question_can_answer(qgis_d
     with application.open_conversation(config, "single") as conversation:
         outcome = conversation.send("做500米缓冲，SEGMENTS=32，核对字段和几何后交付。")
         assert outcome["status"] == "completed" and outcome["artifacts"] == [str(output)]
+        assert len(set(seen_schemas)) == 1  # 跨轮次顶层工具 Schema 字节恒定，不破 KV 缓存
         saved = conversation.agent.store.load()
         check = next(tool_result(conversation.agent.store, item) for item in saved if item.get("tool_name") == "summarize_fields")
         assert check["ok"] and check["result"]["geometry"] == {"empty": 0, "invalid": 0}

@@ -1,7 +1,9 @@
-from typing import Any
+from functools import partial
 from pathlib import Path
+from typing import Any
 
 from gis_agent.core.planning import Plan, STEP_STATUSES
+from gis_agent.runtime.runner import snapshot_files
 from gis_agent.tools.base import Tool
 
 
@@ -9,9 +11,14 @@ FINISH_STATUSES = ("completed", "partial", "needs_input", "blocked", "cancelled"
 
 
 def finish_task(
-    status: str, summary: str, artifacts: list[str] | None = None,
+    status: str,
+    summary: str,
+    artifacts: list[str] | None = None,
     unresolved: list[str] | None = None,
-    question: str | None = None, reason: str | None = None,
+    question: str | None = None,
+    reason: str | None = None,
+    *,
+    output_dir: Path | None = None,
 ) -> dict[str, Any]:
     if status not in FINISH_STATUSES:
         return {"ok": False, "error": "结束状态无效。"}
@@ -24,24 +31,49 @@ def finish_task(
     missing = [path for path in artifacts or [] if not Path(path).is_absolute() or not Path(path).exists()]
     if missing:
         return {"ok": False, "error": "成果路径不存在或未使用绝对路径。", "paths": missing}
+    empty_files = [
+        path for path in artifacts or []
+        if Path(path).is_file() and Path(path).stat().st_size == 0
+    ]
+    if empty_files and status == "completed":
+        return {"ok": False, "error": "成果文件为空（0字节），请检查写出逻辑。", "paths": empty_files}
     if status == "completed" and unresolved:
-        return {"ok": False, "error": "unresolved非空，不能completed。请处理尚未满足的要求，或用partial/blocked/needs_input结束；正常近似和格式说明写summary。",
-                "unresolved": unresolved}
-    reasons = {'missing_input', 'business_decision', 'data_quality', 'unsupported', 'capability_limit'}
+        return {
+            "ok": False,
+            "error": "unresolved非空，不能completed。请处理尚未满足的要求，或用partial/blocked/needs_input结束；正常近似和格式说明写summary。",
+            "unresolved": unresolved,
+        }
+    reasons = {"missing_input", "business_decision", "data_quality", "unsupported", "capability_limit"}
     if reason is not None and reason not in reasons:
-        return {'ok': False, 'error': 'reason类型无效。'}
-    if question is not None and (status != 'needs_input' or not isinstance(question, str) or not question.strip()):
-        return {'ok': False, 'error': 'question仅用于needs_input，且必须为明确的非空问题。'}
-    if status == 'needs_input' and not question:
-        return {'ok': False, 'error': '需要question说明缺少的必要信息、为什么需要及用户可以提供什么。'}
-    if status == 'partial' and not unresolved:
-        return {'ok': False, 'error': 'partial需列尚未完成的unresolved；summary说明已完成部分，有文件成果时列artifacts。'}
-    return {"ok": True, "status": status, "summary": summary.strip(),
-            "artifacts": list(dict.fromkeys(artifacts or [])), "unresolved": unresolved or [],
-            **({'question':question.strip()} if question else {}), **({'reason':reason} if reason else {})}
+        return {"ok": False, "error": "reason类型无效。"}
+    if question is not None and (status != "needs_input" or not isinstance(question, str) or not question.strip()):
+        return {"ok": False, "error": "question仅用于needs_input，且必须为明确的非空问题。"}
+    if status == "needs_input" and not question:
+        return {"ok": False, "error": "需要question说明缺少的必要信息、为什么需要及用户可以提供什么。"}
+    if status == "partial" and not unresolved:
+        return {"ok": False, "error": "partial需列尚未完成的unresolved；summary说明已完成部分，有文件成果时列artifacts。"}
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "status": status,
+        "summary": summary.strip(),
+        "artifacts": list(dict.fromkeys(artifacts or [])),
+        "unresolved": unresolved or [],
+    }
+    if question:
+        result["question"] = question.strip()
+    if reason:
+        result["reason"] = reason
+    if output_dir is not None and output_dir.is_dir():
+        files = snapshot_files((output_dir,), max_entries=200)
+        result["workspace_files"] = [
+            {"path": path, "bytes": size}
+            for path, (_, size) in sorted(files.items())[:50]
+        ]
+    return result
 
 
-def make_planning_tools(plan: Plan) -> list[Tool]:
+def make_planning_tools(plan: Plan, output_dir: Path | None = None) -> list[Tool]:
     return [
         Tool(
             name="update_plan",
@@ -77,7 +109,7 @@ def make_planning_tools(plan: Plan) -> list[Tool]:
             name="finish_task",
             description=(
                 "报告本轮结束状态和面向用户的说明，必须单独调用。"
-                "completed 表示所需工作已完成，artifacts 列出实际文件或数据集目录。"
+                "completed 表示所需工作已完成，artifacts 列出实际非空文件或数据集目录。"
                 "unresolved只列影响用户要求成立的未完成或未知事项，存在时使用partial/blocked/needs_input。"
                 "正常数值近似、图层命名和格式说明写summary；实际执行失败需解决或如实停止。"
                 "needs_input以question提出必要问题并等待原Session补充；reason说明数据缺失/业务选择/质量/不支持/能力限制。"
@@ -87,16 +119,16 @@ def make_planning_tools(plan: Plan) -> list[Tool]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "status": {"type": "string", "enum": [s for s in FINISH_STATUSES if s != 'cancelled']},
+                    "status": {"type": "string", "enum": [s for s in FINISH_STATUSES if s != "cancelled"]},
                     "summary": {"type": "string", "description": "简短成果、实际核查范围和正常限制。"},
                     "question": {"type": "string", "description": "needs_input必填：必要信息、影响和用户可提供的内容。"},
-                    "reason": {"type": "string", "enum": ['missing_input', 'business_decision', 'data_quality', 'unsupported', 'capability_limit']},
+                    "reason": {"type": "string", "enum": ["missing_input", "business_decision", "data_quality", "unsupported", "capability_limit"]},
                     "artifacts": {"type": "array", "items": {"type": "string"}},
                     "unresolved": {"type": "array", "items": {"type": "string"}, "description": "尚未满足或无法确认的用户要求。非空时不能completed。"},
                 },
                 "required": ["status", "summary"],
                 "additionalProperties": False,
             },
-            function=finish_task,
+            function=partial(finish_task, output_dir=output_dir),
         ),
     ]

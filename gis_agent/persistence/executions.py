@@ -326,20 +326,15 @@ class ExecutionHistory:
             try:
                 if path.is_symlink():
                     raise ValueError('子回执不能通过链接读取。')
-                from gis_agent.core.replay import read_receipt, valid_completion
-                record = read_receipt(path)
+                record = json.loads(path.read_text(encoding='utf-8'))
                 if record.get('origin') != 'replay_child' or record.get('execution_id') != path.stem:
                     raise ValueError('子回执来源冲突。')
                 call = record['resolved_call']
                 value = record.get('result')
-                status = {'completed': 'succeeded', 'failed': 'failed'}.get(record['state'], 'unknown')
-                integrity = 'ok'
-                if status == 'succeeded':
-                    if not valid_completion(record):
-                        status, integrity = 'unknown', 'conflict'
+                status = {'completed': 'succeeded', 'failed': 'failed'}.get(record.get('state'), 'unknown')
                 rows.append({'execution_id': path.stem, 'tool': call['tool'],
                              'arguments': call['arguments'], 'arguments_raw': json_text(call['arguments']),
-                             'result': value, 'status': status, 'integrity': integrity, 'pairing': 'replay_child',
+                             'result': value, 'status': status, 'integrity': 'ok', 'pairing': 'replay_child',
                              'sources': {'repair_id': record['repair_id'], 'source_execution': record['source_execution']},
                              'controlled_outputs': record.get('output_versions', {}),
                              'links': result_links(value), 'facts': record.get('facts') or self.facts(value, call['arguments'], record.get('metadata')),

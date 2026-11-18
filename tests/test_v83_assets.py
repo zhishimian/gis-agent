@@ -160,79 +160,85 @@ def test_recent_refs_and_directory_history_preserve_raw_record(tmp_path):
     assert recent_execution_refs([{'role':'tool','tool_name':'read_file','execution_id':'e1'}]) == []
 
 
-def test_staged_example_history_replay_mocktransport_and_family_reuse(qgis_dir, tmp_path):
-    """Actual prefix and tail, current Agent protocol, then zero-start reuse."""
+def test_staged_example_history_and_tail_repair_reuse_prefix(qgis_dir, tmp_path):
+    """Actual prefix persisted on disk; Agent inspects execution_history and repairs tail without recomputing prefix."""
     import httpx
     from openai import OpenAI
     from dataclasses import replace
     from functools import partial
     from langgraph.checkpoint.memory import InMemorySaver
-    from test_replay import recorded
     from gis_agent.application import AgentFactory
     from gis_agent.config import AppConfig
     from gis_agent.core.model import ModelConfig
     from gis_agent.integrations.llm import chat, make_token_counter
     from gis_agent.integrations.qgis.client import QGISClient
-    from gis_agent.tools.base import Tool
     from gis_agent.persistence.evidence import file_digest
+    from gis_agent.persistence.executions import execution_id, record_history
+    from gis_agent.tools.base import Tool
+
+    def recorded(history, tool, arguments):
+        messages = history.store.read_record()
+        idx = len(messages)
+        call = {'id': f'c{idx}', 'type': 'function', 'function': {'name': tool.name, 'arguments': json.dumps(arguments)}}
+        messages.append({'role': 'assistant', 'content': None, 'tool_calls': [call], 'executions': {call['id']: 'started'}})
+        history.store.save(messages)
+        identifier = execution_id(idx, 0)
+        record_history(history.begin, idx, 0, call, tool.execution_metadata)
+        result = tool.run(arguments)
+        messages[-1]['executions'][call['id']] = 'finished'
+        stored = history.store.tool_message(call['id'], tool.name, result, 8000)
+        stored['execution_id'] = identifier
+        record_history(history.complete, identifier, stored, len(messages), 1.0, arguments)
+        messages.append(stored)
+        history.store.save(messages)
+        return identifier, result
+
     output = tmp_path / 'output'
     output.mkdir()
     history = ExecutionHistory(SessionStore(tmp_path / 'sessions', 'staged'), output)
-    history.store.save([{'role':'user','origin':'user','content':'Compute and summarize saved observations.'}])
+    history.store.save([{'role': 'user', 'origin': 'user', 'content': 'Compute and summarize saved observations.'}])
     script = SKILLS / 'gis-spatial-analysis/scripts/staged_compute.py'
     prepared = output / 'prepared.npy'
     prefix_job = output / 'prefix.json'
-    prefix_job.write_text(json.dumps({'inputs':{},'parameters':{'mode':'prepare','size':20000,'rounds':25},
-                                      'outputs':{'prepared':str(prepared)}}))
+    prefix_job.write_text(json.dumps({'inputs': {}, 'parameters': {'mode': 'prepare', 'size': 20000, 'rounds': 25},
+                                      'outputs': {'prepared': str(prepared)}}))
     tool = Tool('run_python_script', 'Python', {}, partial(run_python_script,
                  qgis_dir / 'bin/python-qgis-ltr.bat', output / 'python_logs'))
-    _, prefix = recorded(history, tool, {'script_path':str(script),'arguments':[str(prefix_job)]})
+    _, prefix = recorded(history, tool, {'script_path': str(script), 'arguments': [str(prefix_job)]})
     assert prefix['ok'], prefix
     before = file_digest(prepared)
     tail_job = output / 'tail.json'
-    tail_job.write_text(json.dumps({'inputs':{'prepared':str(prepared)},'parameters':{'mode':'broken'},
-                                    'outputs':{'statistics':str(output/'old.json')}}))
-    source_id, failed = recorded(history, tool, {'script_path':str(script),'arguments':[str(tail_job)]})
+    stats_path = output / 'stats.json'
+    tail_job.write_text(json.dumps({'inputs': {'prepared': str(prepared)}, 'parameters': {'mode': 'broken'},
+                                    'outputs': {'statistics': str(stats_path)}}))
+    source_id, failed = recorded(history, tool, {'script_path': str(script), 'arguments': [str(tail_job)]})
     assert not failed['ok']
-    plan = {'repair_id':'staged_fix','parent_repair':None,'reason':'Fix tail using saved prefix',
-        'accepted_inputs':{'prepared':{'path':str(prepared)}},
-        'steps':[{'step_id':'tail','source_execution':source_id,
-            'inputs':{'prepared':{'accepted':'prepared'}},
-            'changes':{'candidate_script':str(script),'expected_sha256':file_digest(script),
-                'job_contract':True,'side_effects':'outputs_only','deterministic':True,
-                'job_parameters':{'mode':'summarize'}},
-            'outputs':{'statistics':'stats.json'}}], 'targets':['tail']}
-    replies = [('execution_history',{'execution_id':source_id,'section':'detail'}),
-               ('local_replay',{'plan':plan}),
-               ('finish_task',{'status':'completed','summary':'Tail repaired with saved observations.'})]
+    fixed_job = json.dumps({'inputs': {'prepared': str(prepared)}, 'parameters': {'mode': 'summarize'},
+                            'outputs': {'statistics': str(stats_path)}})
+    replies = [
+        ('execution_history', {'execution_id': source_id, 'section': 'detail'}),
+        ('write_file', {'path': str(tail_job), 'content': fixed_job, 'overwrite': True}),
+        ('run_python_script', {'script_path': str(script), 'arguments': [str(tail_job)]}),
+        ('finish_task', {'status': 'completed', 'summary': 'Tail repaired with saved observations.', 'artifacts': [str(stats_path)]}),
+    ]
     requests = []
     def response(request):
         requests.append(json.loads(request.content))
-        name,args = replies[len(requests)-1]
-        return httpx.Response(200,json={'id':str(len(requests)),'model':'offline','object':'chat.completion',
-            'choices':[{'index':0,'finish_reason':'tool_calls','message':{'role':'assistant','content':None,
-                'tool_calls':[{'id':f'c{len(requests)}','type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}],
-            'usage':{'prompt_tokens':10,'completion_tokens':5,'total_tokens':15}})
-    config = replace(AppConfig.from_env(ROOT),memory=None,model=ModelConfig(tokenizer='bytes',supports_images=False,image_tokens=0))
-    messages = history.store.load()+[{'role':'user','origin':'user','content':'Fix the tail preserving the valid prefix.'}]
-    with OpenAI(api_key='offline',max_retries=0,http_client=httpx.Client(transport=httpx.MockTransport(response))) as client:
-        agent = AgentFactory(config,partial(chat,client,config.model),make_token_counter(config.model),
-                             QGISClient(config.qgis.process_launcher),{}).create(
-                                 history.store,messages,output,InMemorySaver(),'Repair from current evidence.')
-        assert agent.run(messages)['status']=='completed'
-    result = next(row['result'] for row in agent.history.rows() if row['tool']=='local_replay')
-    assert result['ok'], result
-    assert file_digest(prepared)==before and not (output/'old.json').exists()
-    stats = json.loads(Path(result['outputs']['tail']['statistics']).read_text())
-    assert stats['count']==20000
-    # Repeated request must not launch Python at all.
-    def forbidden(*_):
-        raise AssertionError('Trusted completed plan should not execute again')
-    native = agent.registry.get('run_python_script')
-    agent.registry.tools['run_python_script'] = replace(native, function=forbidden)
-    repeated = agent.registry.execute('local_replay', {'plan':plan})
-    assert repeated['ok'], repeated
-    assert len(requests)==3
+        name, args = replies[len(requests) - 1]
+        return httpx.Response(200, json={'id': str(len(requests)), 'model': 'offline', 'object': 'chat.completion',
+            'choices': [{'index': 0, 'finish_reason': 'tool_calls', 'message': {'role': 'assistant', 'content': None,
+                'tool_calls': [{'id': f'c{len(requests)}', 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(args)}}]}}],
+            'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}})
+    config = replace(AppConfig.from_env(ROOT), memory=None, model=ModelConfig(tokenizer='bytes', supports_images=False, image_tokens=0))
+    messages = history.store.load() + [{'role': 'user', 'origin': 'user', 'content': 'Fix the tail preserving the valid prefix.'}]
+    with OpenAI(api_key='offline', max_retries=0, http_client=httpx.Client(transport=httpx.MockTransport(response))) as client:
+        agent = AgentFactory(config, partial(chat, client, config.model), make_token_counter(config.model),
+                             QGISClient(config.qgis.process_launcher), {}).create(
+                                 history.store, messages, output, InMemorySaver(), 'Repair from current evidence.')
+        assert agent.run(messages)['status'] == 'completed'
+    assert file_digest(prepared) == before
+    assert json.loads(stats_path.read_text())['count'] == 20000
+    assert len(requests) == 4
 
 
 def test_recent_hints_do_not_add_rounds_to_ordinary_python(qgis_dir, tmp_path, monkeypatch):

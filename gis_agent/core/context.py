@@ -25,7 +25,7 @@ def recent_execution_refs(messages: list[dict[str, Any]]) -> list[dict[str, str]
         name = message.get('tool_name', '')
         identifier = message.get('execution_id')
         if message.get('role') != 'tool' or not identifier or not (
-                name == 'run_python_script' or name == 'local_replay' or name.startswith('qgis_')):
+                name in {'run_python_script', 'run_qgis_algorithm'} or name.startswith('qgis_')):
             continue
         ref = {'id': identifier, 'tool': name[:72]}
         if len(json_text([*refs, ref])) > 512:

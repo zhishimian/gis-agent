@@ -1,23 +1,23 @@
+from collections.abc import Callable
+from dataclasses import dataclass, field
 import hashlib
 import json
 import logging
 from time import perf_counter
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from gis_agent.core.context import ContextLimit, ContextManager
 from gis_agent.core.auxiliary import AuxiliaryError
+from gis_agent.core.context import ContextLimit, ContextManager
+from gis_agent.core.events import EventCallback, emit_event
 from gis_agent.core.memory import MemoryStore, MemoryTurn, extract_memories
 from gis_agent.core.model import ModelReply
 from gis_agent.core.planning import Plan
-from gis_agent.persistence.sessions import SessionStore, message_units
 from gis_agent.persistence.executions import ExecutionHistory, execution_id, record_history
-from gis_agent.persistence.repairs import begin_root, complete_root, recover_root
+from gis_agent.persistence.sessions import SessionStore, message_units
 from gis_agent.prompts import render_prompt
 from gis_agent.tools.base import Tool
 from gis_agent.tools.registry import ToolRegistry
@@ -25,10 +25,10 @@ from gis_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 PASSIVE_TOOLS = {
-    'update_plan', 'finish_task', 'read_session_messages', 'execution_history',
-    'search_memory', 'remember_memory', 'forget_memory',
-    'list_files', 'read_file', 'search_text', 'inspect_data', 'summarize_fields',
-    'check_spatial_relation', 'read_image', 'search_qgis_tools', 'calculate_distance',
+    "update_plan", "finish_task", "read_session_messages", "execution_history",
+    "search_memory", "remember_memory", "forget_memory",
+    "list_files", "read_file", "search_text", "inspect_data", "summarize_fields",
+    "check_spatial_relation", "read_image", "search_qgis_tools", "calculate_distance",
 }
 
 
@@ -53,7 +53,7 @@ class RunState(TypedDict):
 class Agent:
     registry: ToolRegistry
     base_tools: list[Tool]
-    load_qgis_tool: Callable[[str], Tool]
+    load_qgis_tool: Callable[[str], Tool] | None
     plan: Plan
     instructions: str
     chat: Callable[..., ModelReply]
@@ -63,180 +63,207 @@ class Agent:
     memory_turn: MemoryTurn | None = None
     checkpointer: BaseCheckpointSaver | None = None
     history: ExecutionHistory | None = None
+    on_event: EventCallback | None = None
     graph: Any = field(init=False, repr=False)
     messages: list[dict[str, Any]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.memory is not None and self.memory_turn is None:
-            raise ValueError('启用记忆时必须提供 MemoryTurn。')
+            raise ValueError("启用记忆时必须提供 MemoryTurn。")
         builder = StateGraph(RunState)
-        builder.add_node('model', self.model)
-        builder.add_node('tools', self.tools)
-        builder.add_node('finish', self.finish)
-        builder.add_edge(START, 'model')
-        builder.add_conditional_edges('model', self.route, {'continue': 'tools', 'finish': 'finish'})
-        builder.add_conditional_edges('tools', self.route, {'continue': 'model', 'finish': 'finish'})
-        builder.add_edge('finish', END)
+        builder.add_node("model", self.model)
+        builder.add_node("tools", self.tools)
+        builder.add_node("finish", self.finish)
+        builder.add_edge(START, "model")
+        builder.add_conditional_edges("model", self.route, {"continue": "tools", "finish": "finish"})
+        builder.add_conditional_edges("tools", self.route, {"continue": "model", "finish": "finish"})
+        builder.add_edge("finish", END)
         self.graph = builder.compile(
             checkpointer=self.checkpointer if self.checkpointer is not None else InMemorySaver(),
-            interrupt_after=['tools'],
+            interrupt_after=["tools"],
         )
 
     def options(self) -> dict[str, Any]:
-        return {'configurable': {'thread_id': self.store.session_id}, 'recursion_limit': 16}
+        return {"configurable": {"thread_id": self.store.session_id}, "recursion_limit": 16}
 
     def record_hash(self) -> str:
         return hashlib.sha256(self.store.path.read_bytes()).hexdigest()
 
     def verify_record(self, state: RunState) -> None:
-        if self.record_hash() != state['record_hash']:
+        if self.record_hash() != state["record_hash"]:
             raise ValueError(
-                'Session 已领先于检查点或被外部修改，不能自动重放。'
-                '请检查已有产物和执行标记；必要时新建会话并提供已有成果路径。'
+                "Session 已领先于检查点或被外部修改，不能自动重放。"
+                "请检查已有产物和执行标记；必要时新建会话并提供已有成果路径。"
             )
 
     def recall(self, start: int) -> str:
         if self.memory is None:
-            return ''
-        query = self.messages[start]['content'] + ' ' + self.plan.goal
+            return ""
+        query = self.messages[start]["content"] + " " + self.plan.goal
         return json.dumps(self.memory.recall(query), ensure_ascii=False)
 
     def run(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         previous = self.graph.get_state(self.options())
         if previous.next:
-            raise ValueError('当前会话仍有待续跑的图，请先调用 resume。')
+            raise ValueError("当前会话仍有待续跑的图，请先调用 resume。")
         message_units(messages)
         self.messages = messages
         self.context.auxiliary.reset()
         start = len(messages) - 1
-        if start < 0 or messages[start]['role'] != 'user' or messages[start].get('origin') not in {'user', 'delegation'}:
-            raise ValueError('新一轮必须从用户输入或委派输入开始。')
+        if start < 0 or messages[start]["role"] != "user" or messages[start].get("origin") not in {"user", "delegation"}:
+            raise ValueError("新一轮必须从用户输入或委派输入开始。")
         if self.memory_turn is not None:
             self.memory_turn.reset(start)
         self.store.save(messages)
+        emit_event(self.on_event, "turn_started", self.store.session_id, turn_start=start)
         state: RunState = {
-            'version': 810,
-            'turn_start': start, 'model_index': len(messages), 'responses_used': 0,
-            'execution_started': False, 'algorithms': list(previous.values.get('algorithms', [])) if messages[start].get('in_reply_to') else [],
-            'callable_names': [], 'memory_errors': [], 'handled_sources': [], 'handled_bodies': [],
-            'background': self.recall(start), 'record_hash': self.record_hash(),
-            'auxiliary_used': 0, 'outcome': None,
+            "version": 900,
+            "turn_start": start,
+            "model_index": len(messages),
+            "responses_used": 0,
+            "execution_started": False,
+            "algorithms": list(previous.values.get("algorithms", [])) if messages[start].get("in_reply_to") else [],
+            "callable_names": [],
+            "memory_errors": [],
+            "handled_sources": [],
+            "handled_bodies": [],
+            "background": self.recall(start),
+            "record_hash": self.record_hash(),
+            "auxiliary_used": 0,
+            "outcome": None,
         }
         return self.drive(state)
 
     def resume(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         snapshot = self.graph.get_state(self.options())
         if not snapshot.next:
-            raise ValueError('没有待续跑的检查点。')
-        if snapshot.values.get('version') not in {790, 810}:
-            raise ValueError('检查点来自旧版执行流程，请保留原记录，新建会话并提供已有成果路径。')
-        if self.record_hash() != snapshot.values['record_hash']:
-            messages[:] = self.store.read_record()
-            if not recover_root(self, snapshot, messages):
-                self.verify_record(snapshot.values)
-            snapshot = self.graph.get_state(self.options())
+            raise ValueError("没有待续跑的检查点。")
+        if snapshot.values.get("version") not in {790, 810, 900}:
+            raise ValueError("检查点来自旧版执行流程，请保留原记录，新建会话并提供已有成果路径。")
+        self.verify_record(snapshot.values)
         messages[:] = self.store.read_record()
         self.messages = messages
         restored = Plan.from_messages(messages)
         self.plan.goal, self.plan.steps = restored.goal, restored.steps
-        self.context.auxiliary.used = snapshot.values['auxiliary_used']
+        self.context.auxiliary.used = snapshot.values["auxiliary_used"]
         if self.memory_turn is not None:
-            self.memory_turn.reset(snapshot.values['turn_start'])
-            self.memory_turn.handled_sources.update(snapshot.values['handled_sources'])
-            self.memory_turn.handled_bodies.update(snapshot.values['handled_bodies'])
+            self.memory_turn.reset(snapshot.values["turn_start"])
+            self.memory_turn.handled_sources.update(snapshot.values["handled_sources"])
+            self.memory_turn.handled_bodies.update(snapshot.values["handled_bodies"])
         return self.drive(None)
 
     def drive(self, state: RunState | None) -> dict[str, Any]:
-        # 每批工具后提交检查点，再续跑同一个图，不设置任务总响应次数。
         while True:
-            self.graph.invoke(state, self.options(), durability='sync')
+            self.graph.invoke(state, self.options(), durability="sync")
             snapshot = self.graph.get_state(self.options())
             if not snapshot.next:
-                return snapshot.values['outcome']
+                return snapshot.values["outcome"]
             self.verify_record(snapshot.values)
             state = None
 
     def available(self, state: RunState) -> list[Tool]:
         tools = {tool.name: tool for tool in self.base_tools}
-        for algorithm_id in state['algorithms']:
-            tool = self.load_qgis_tool(algorithm_id)
-            tools[tool.name] = tool
+        if self.load_qgis_tool is not None:
+            for algorithm_id in state["algorithms"]:
+                tool = self.load_qgis_tool(algorithm_id)
+                tools[tool.name] = tool
         return list(tools.values())
 
     def model(self, state: RunState) -> dict[str, Any]:
         message_units(self.messages)
-        business = {
-            'latest_user_message': max(i for i, item in enumerate(self.messages) if item['role'] == 'user' and item.get('origin') != 'program'),
-            'recent_tool_messages': {item['tool_call_id']: i for i, item in enumerate(self.messages) if item['role'] == 'tool' and i >= len(self.messages) - 20},
+        business: dict[str, Any] = {
+            "latest_user_message": max(
+                i for i, item in enumerate(self.messages)
+                if item["role"] == "user" and item.get("origin") != "program"
+            ),
+            "recent_tool_messages": {
+                item["tool_call_id"]: i
+                for i, item in enumerate(self.messages)
+                if item["role"] == "tool" and i >= len(self.messages) - 20
+            },
         }
-        latest = self.messages[business['latest_user_message']]
-        if latest.get('in_reply_to'):
-            business['answer_to_request'] = latest['in_reply_to']
+        latest = self.messages[business["latest_user_message"]]
+        if latest.get("in_reply_to"):
+            business["answer_to_request"] = latest["in_reply_to"]
         try:
-            request = self.context.prepare(self.instructions, self.messages, business, self.available(state), state['background'])
+            request = self.context.prepare(
+                self.instructions, self.messages, business, self.available(state), state["background"]
+            )
         except (ContextLimit, AuxiliaryError) as error:
-            return {'outcome': {'ok': False, 'status': 'blocked', 'summary': str(error)}}
+            return {"outcome": {"ok": False, "status": "blocked", "summary": str(error)}}
         reply = self.chat(request.messages, request.schemas)
-        self.store.record_model_call({'purpose': 'main', **reply.metadata()})
-        logger.info('模型返回：%s；请求估算 token：%s', reply.metadata(), request.estimated_tokens)
+        self.store.record_model_call({"purpose": "main", **reply.metadata()})
+        emit_event(
+            self.on_event, "model_replied", self.store.session_id,
+            finish_reason=reply.finish_reason, estimated_tokens=request.estimated_tokens, usage=reply.usage,
+        )
+        logger.info("模型返回：%s；请求估算 token：%s", reply.metadata(), request.estimated_tokens)
         outcome = None
-        if reply.finish_reason not in {'stop', 'tool_calls'}:
+        if reply.finish_reason not in {"stop", "tool_calls"}:
             message = {
-                'role': 'assistant', 'content': '模型响应未完整结束，未执行其中的工具调用。',
-                'response': {**reply.metadata(), 'raw_message': reply.message},
+                "role": "assistant",
+                "content": "模型响应未完整结束，未执行其中的工具调用。",
+                "response": {**reply.metadata(), "raw_message": reply.message},
             }
-            outcome = {'ok': False, 'status': 'blocked', 'summary': f'模型结束状态为 {reply.finish_reason}，请检查输出预算。'}
+            outcome = {"ok": False, "status": "blocked", "summary": f"模型结束状态为 {reply.finish_reason}，请检查输出预算。"}
         else:
-            message = {**reply.message, 'response': reply.metadata()}
-            if not message.get('tool_calls'):
-                message.pop('tool_calls', None)
+            message = {**reply.message, "response": reply.metadata()}
+            if not message.get("tool_calls"):
+                message.pop("tool_calls", None)
         self.messages.append(message)
         self.store.save(self.messages)
+        retained_algorithms = (
+            [
+                algorithm for algorithm in state["algorithms"]
+                if self.load_qgis_tool(algorithm).name in request.callable_names
+            ]
+            if self.load_qgis_tool is not None
+            else []
+        )
         return {
-            'responses_used': state['responses_used'] + 1,
-            'algorithms': [algorithm for algorithm in state['algorithms']
-                           if self.load_qgis_tool(algorithm).name in request.callable_names],
-            'callable_names': sorted(request.callable_names), 'record_hash': self.record_hash(),
-            'auxiliary_used': self.context.auxiliary.used, 'outcome': outcome,
+            "responses_used": state["responses_used"] + 1,
+            "algorithms": retained_algorithms,
+            "callable_names": sorted(request.callable_names),
+            "record_hash": self.record_hash(),
+            "auxiliary_used": self.context.auxiliary.used,
+            "outcome": outcome,
         }
 
     def tools(self, state: RunState) -> RunState:
         state = dict(state)
-        message = self.messages[state['model_index']]
-        calls = message.get('tool_calls', [])
+        message = self.messages[state["model_index"]]
+        calls = message.get("tool_calls", [])
         self.available(state)
         if not calls:
-            self.messages.append({'role': 'user', 'origin': 'program', 'content': render_prompt('continue.txt')})
+            self.messages.append({"role": "user", "origin": "program", "content": render_prompt("continue.txt")})
             self.store.save(self.messages)
         for slot, call in enumerate(calls):
-            name = call['function']['name']
+            name = call["function"]["name"]
             identifier = None
-            repair_root = None
             elapsed_ms = 0.0
             try:
-                arguments = json.loads(call['function']['arguments'])
+                arguments = json.loads(call["function"]["arguments"])
             except json.JSONDecodeError as error:
-                result = {'ok': False, 'error': f'工具参数不是有效 JSON：{error}'}
+                result = {"ok": False, "error": f"工具参数不是有效 JSON：{error}"}
             else:
                 if not isinstance(arguments, dict):
-                    result = {'ok': False, 'error': '工具参数必须是 JSON 对象。'}
-                elif name not in state['callable_names']:
-                    result = {'ok': False, 'error': f'本次没有提供工具 {name}，请先搜索。'}
-                elif name in {'finish_task', 'local_replay'} and len(calls) != 1:
-                    result = {'ok': False, 'error': f'{name} 必须单独调用。'}
-                elif name == 'local_replay' and not isinstance(arguments.get('plan'), dict):
-                    result = {'ok': False, 'error': 'local_replay.plan 必须是 JSON 对象。'}
+                    result = {"ok": False, "error": "工具参数必须是 JSON 对象。"}
+                elif name not in state["callable_names"]:
+                    result = {"ok": False, "error": f"本次没有提供工具 {name}，请核对可用工具列表。"}
+                elif name == "finish_task" and len(calls) != 1:
+                    result = {"ok": False, "error": "finish_task 必须单独调用。"}
                 else:
-                    if name == 'local_replay' and self.history is not None:
-                        repair_root = begin_root(self.history, state, self.messages, self.graph.get_state(self.options()))
-                    message.setdefault('executions', {})[call['id']] = 'started'
+                    message.setdefault("executions", {})[call["id"]] = "started"
                     self.store.save(self.messages)
+                    emit_event(self.on_event, "tool_started", self.store.session_id, tool=name, call_id=call["id"])
                     if self.history is not None:
-                        identifier = execution_id(state['model_index'], slot)
-                        record_history(self.history.begin, state['model_index'], slot, call,
-                                       self.registry.get(name).execution_metadata)
+                        identifier = execution_id(state["model_index"], slot)
+                        record_history(
+                            self.history.begin, state["model_index"], slot, call,
+                            self.registry.get(name).execution_metadata,
+                        )
                     if name not in PASSIVE_TOOLS:
-                        state['execution_started'] = True
+                        state["execution_started"] = True
                     started = perf_counter()
                     try:
                         result = self.registry.execute(name, arguments)
@@ -245,40 +272,43 @@ class Agent:
                             record_history(self.history.raised, identifier, error, (perf_counter() - started) * 1000)
                         raise
                     elapsed_ms = (perf_counter() - started) * 1000
-                    if name == 'search_qgis_tools' and isinstance(result, list):
-                        algorithms = list(state['algorithms'])
+                    if name == "search_qgis_tools" and isinstance(result, list) and self.load_qgis_tool is not None:
+                        algorithms = list(state["algorithms"])
                         for item in result:
-                            tool = self.load_qgis_tool(item['algorithm_id'])
-                            if item['algorithm_id'] in algorithms:
-                                algorithms.remove(item['algorithm_id'])
-                            algorithms.append(item['algorithm_id'])
-                            item['tool_name'] = tool.name
-                        state['algorithms'] = algorithms
-                    if name == 'finish_task' and result['ok']:
+                            tool = self.load_qgis_tool(item["algorithm_id"])
+                            if item["algorithm_id"] in algorithms:
+                                algorithms.remove(item["algorithm_id"])
+                            algorithms.append(item["algorithm_id"])
+                            item["tool_name"] = tool.name
+                        state["algorithms"] = algorithms
+                    if name == "finish_task" and result["ok"]:
                         result = self.accept_finish(result, state)
-                    message['executions'][call['id']] = 'finished'
-            if name in {'remember_memory', 'forget_memory'}:
-                errors = set(state['memory_errors'])
-                if result.get('ok'):
+                    message["executions"][call["id"]] = "finished"
+                    emit_event(
+                        self.on_event, "tool_finished", self.store.session_id,
+                        tool=name, call_id=call["id"], ok=result.get("ok") if isinstance(result, dict) else True,
+                        elapsed_ms=elapsed_ms,
+                    )
+            if name in {"remember_memory", "forget_memory"}:
+                errors = set(state["memory_errors"])
+                if result.get("ok"):
                     errors.discard(name)
-                    state['background'] = self.recall(state['turn_start'])
+                    state["background"] = self.recall(state["turn_start"])
                 else:
                     errors.add(name)
-                state['memory_errors'] = sorted(errors)
-            stored = self.store.tool_message(call['id'], name, result, self.context.config.tool_limit)
+                state["memory_errors"] = sorted(errors)
+            stored = self.store.tool_message(call["id"], name, result, self.context.config.tool_limit)
             if identifier is not None:
-                stored['execution_id'] = identifier
+                stored["execution_id"] = identifier
                 record_history(self.history.complete, identifier, stored, len(self.messages), elapsed_ms, arguments)
-            if repair_root is not None:
-                complete_root(self.history, repair_root, call, stored)
             self.messages.append(stored)
             self.store.save(self.messages)
-            logger.info('工具 %s：%s', name, stored['content'][:1200])
-        state['model_index'] = len(self.messages)
-        state['record_hash'] = self.record_hash()
+            logger.info("工具 %s：%s", name, stored["content"][:1200])
+        state["model_index"] = len(self.messages)
+        state["record_hash"] = self.record_hash()
         if self.memory_turn is not None:
-            state['handled_sources'] = sorted(self.memory_turn.handled_sources)
-            state['handled_bodies'] = sorted(self.memory_turn.handled_bodies)
+            state["handled_sources"] = sorted(self.memory_turn.handled_sources)
+            state["handled_bodies"] = sorted(self.memory_turn.handled_bodies)
         return state
 
     def accept_finish(self, result: dict[str, Any], state: RunState) -> dict[str, Any]:
@@ -289,28 +319,28 @@ class Agent:
             return {"ok": False, "error": "本轮已执行操作，请报告任务状态。"}
         if status == "completed" and self.plan.unfinished():
             return {"ok": False, "error": "计划仍有未完成项，请继续处理或报告阻碍。", "unfinished": self.plan.unfinished()}
-        if status == 'cancelled' and not any(
-                message.get('cancelled_request') for message in self.messages[state['turn_start']:]):
-            return {'ok':False,'error':'cancelled需用户明确取消；无法完成请用blocked/partial或提出必要问题。'}
-        if status in {'partial', 'blocked', 'needs_input'} and self.plan.unfinished():
-            result = result | {'unfinished_plan': self.plan.unfinished()}
+        if status == "cancelled" and not any(
+            message.get("cancelled_request") for message in self.messages[state["turn_start"] :]
+        ):
+            return {"ok": False, "error": "cancelled需用户明确取消；无法完成请用blocked/partial或提出必要问题。"}
+        if status in {"partial", "blocked", "needs_input"} and self.plan.unfinished():
+            result = result | {"unfinished_plan": self.plan.unfinished()}
         state["outcome"] = result
         return result
 
     def finish(self, state: RunState) -> dict[str, Any]:
-        outcome = dict(state['outcome'])
-        self.messages.append({'role': 'assistant', 'content': outcome['summary']})
+        outcome = dict(state["outcome"])
+        self.messages.append({"role": "assistant", "content": outcome["summary"]})
         self.store.save(self.messages)
-        if self.memory is not None and outcome['status'] in {'answer', 'completed'}:
+        if self.memory is not None and outcome["status"] in {"answer", "completed"}:
             try:
                 maintenance = extract_memories(self.memory, self.store, self.messages, self.memory_turn, self.context.auxiliary)
             except (OSError, ValueError, KeyError, TypeError) as error:
-                maintenance = {'status': 'failed', 'error': str(error)}
-            outcome['memory'] = maintenance
-            self.store.record_model_call({'purpose': 'memory_maintenance', **maintenance})
-            logger.info('记忆维护：%s', maintenance)
-        return {'outcome': outcome, 'record_hash': self.record_hash(), 'auxiliary_used': self.context.auxiliary.used}
+                maintenance = {"status": "failed", "error": str(error)}
+            outcome["memory"] = maintenance
+            self.store.record_model_call({"purpose": "memory_maintenance", **maintenance})
+        emit_event(self.on_event, "turn_finished", self.store.session_id, status=outcome.get("status"))
+        return {"outcome": outcome, "record_hash": self.record_hash(), "model_index": len(self.messages)}
 
-    @staticmethod
-    def route(state: RunState) -> str:
-        return 'finish' if state['outcome'] is not None else 'continue'
+    def route(self, state: RunState) -> str:
+        return "finish" if state["outcome"] is not None else "continue"
