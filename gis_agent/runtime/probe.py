@@ -7,6 +7,8 @@ import subprocess
 import sys
 from typing import Any
 
+from gis_agent.runtime.paths import import_root
+
 
 CANDIDATE_PACKAGES = (
     "geopandas",
@@ -60,7 +62,7 @@ def probe_launcher(launcher: Path, timeout_sec: int = 15) -> dict[str, Any]:
         "print(json.dumps(probe_current_python()))"
     )
     env = dict(os.environ)
-    root = str(Path(__file__).resolve().parents[2])
+    root = str(import_root())
     env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     proc = subprocess.run(
         [str(launcher), "-c", code],

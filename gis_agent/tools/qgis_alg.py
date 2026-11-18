@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 from gis_agent.integrations.qgis.adapter import execute_algorithm
@@ -15,6 +16,7 @@ def run_qgis_algorithm(
     parameters: dict[str, Any],
     project_path: str | None = None,
     timeout_sec: int = 300,
+    cancel_event: Event | None = None,
 ) -> dict[str, Any]:
     if not isinstance(algorithm_id, str) or not algorithm_id.strip():
         return {"ok": False, "status": "failed", "error": "必须提供非空的 algorithm_id。"}
@@ -31,8 +33,8 @@ def run_qgis_algorithm(
         algorithm_id = exact
     if not isinstance(parameters, dict):
         return {"ok": False, "status": "failed", "algorithm_id": algorithm_id, "error": "parameters 必须是 JSON 对象。"}
-    if not isinstance(timeout_sec, int) or not 10 <= timeout_sec <= 3600:
-        return {"ok": False, "status": "failed", "algorithm_id": algorithm_id, "error": "timeout_sec 必须在 10 到 3600 秒之间。"}
+    if not isinstance(timeout_sec, int) or not 10 <= timeout_sec <= 600:
+        return {"ok": False, "status": "failed", "algorithm_id": algorithm_id, "error": "timeout_sec 必须在 10 到 600 秒之间。"}
 
     if algorithm_id not in help_cache:
         help_cache[algorithm_id] = client.query("help", algorithm_id)
@@ -54,8 +56,9 @@ def run_qgis_algorithm(
     call_args = dict(parameters)
     if project_path is not None:
         call_args["project_path"] = project_path
-    if timeout_sec != client.timeout:
-        timed_client = QGISClient(client.launcher, timeout=timeout_sec)
+    effective_cancel = cancel_event or client.cancel_event
+    if timeout_sec != client.timeout or effective_cancel is not client.cancel_event:
+        timed_client = QGISClient(client.launcher, timeout=timeout_sec, cancel_event=effective_cancel)
         return execute_algorithm(timed_client, algorithm_id, definitions, **call_args)
     return execute_algorithm(client, algorithm_id, definitions, **call_args)
 
@@ -65,6 +68,7 @@ def make_run_qgis_tool(
     catalog: dict[str, dict[str, Any]],
     help_cache: dict[str, dict[str, Any]] | None = None,
     protected_paths: tuple[Path, ...] = (),
+    cancel_event: Event | None = None,
 ) -> Tool:
     cache = help_cache if help_cache is not None else {}
     return Tool(
@@ -80,12 +84,20 @@ def make_run_qgis_tool(
                 "algorithm_id": {"type": "string", "description": "准确算法 ID，如 'native:buffer'。"},
                 "parameters": {"type": "object", "additionalProperties": True, "description": "算法输入与输出参数字典。"},
                 "project_path": {"type": "string", "description": "布局等算法所需的已有 QGIS 工程绝对路径。"},
-                "timeout_sec": {"type": "integer", "minimum": 10, "maximum": 3600, "description": "超时秒数，默认 300。"},
+                "timeout_sec": {"type": "integer", "minimum": 10, "maximum": 600, "description": "超时秒数，默认 300，上限 600。"},
             },
             "required": ["algorithm_id", "parameters"],
             "additionalProperties": False,
         },
         function=lambda algorithm_id, parameters, project_path=None, timeout_sec=300: run_qgis_algorithm(
-            client, catalog, cache, protected_paths, algorithm_id, parameters, project_path=project_path, timeout_sec=timeout_sec
+            client,
+            catalog,
+            cache,
+            protected_paths,
+            algorithm_id,
+            parameters,
+            project_path=project_path,
+            timeout_sec=timeout_sec,
+            cancel_event=cancel_event,
         ),
     )

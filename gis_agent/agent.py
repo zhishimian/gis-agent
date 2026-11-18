@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import logging
+from threading import Event
 from time import perf_counter
 from typing import Any, TypedDict
 
@@ -62,6 +63,8 @@ class Agent:
     checkpointer: Any = None
     history: ExecutionHistory | None = None
     on_event: EventCallback | None = None
+    cancel_event: Event | None = None
+    workspace_context: dict[str, Any] | None = None
     graph: AgentLoopRunner = field(init=False, repr=False)
     messages: list[dict[str, Any]] = field(init=False, repr=False)
 
@@ -69,6 +72,9 @@ class Agent:
         if self.memory is not None and self.memory_turn is None:
             raise ValueError("启用记忆时必须提供 MemoryTurn。")
         self.graph = AgentLoopRunner(self.model, self.tools, self.finish, self.checkpointer)
+
+    def _is_cancelled(self) -> bool:
+        return self.cancel_event is not None and self.cancel_event.is_set()
 
     def options(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.store.session_id}, "recursion_limit": 16}
@@ -100,7 +106,6 @@ class Agent:
         executions = assistant_msg.get("executions") or {}
         if not calls or any(executions.get(c["id"]) != "finished" for c in calls):
             return False
-        # 验证前缀与 model 阶段记录一致（剔除后来写入的 executions 字段）
         prefix = [*records[:idx], {k: v for k, v in assistant_msg.items() if k != "executions"}]
         if hashlib.sha256(json_text(prefix).encode("utf-8")).hexdigest() != snapshot.values.get("record_hash"):
             return False
@@ -189,6 +194,15 @@ class Agent:
 
     def model(self, state: RunState) -> dict[str, Any]:
         message_units(self.messages)
+        if self._is_cancelled():
+            return {
+                "outcome": {
+                    "ok": True,
+                    "status": "cancelled",
+                    "summary": "任务已由用户主动中止，已完成阶段的产物已保留。",
+                },
+                "record_hash": self.record_hash(),
+            }
         business: dict[str, Any] = {
             "latest_user_message": max(
                 i for i, item in enumerate(self.messages)
@@ -200,6 +214,8 @@ class Agent:
                 if item["role"] == "tool" and i >= len(self.messages) - 20
             },
         }
+        if self.workspace_context:
+            business["workspace_context"] = self.workspace_context
         latest = self.messages[business["latest_user_message"]]
         if latest.get("in_reply_to"):
             business["answer_to_request"] = latest["in_reply_to"]
@@ -209,6 +225,15 @@ class Agent:
             )
         except (ContextLimit, AuxiliaryError) as error:
             return {"outcome": {"ok": False, "status": "blocked", "summary": str(error)}}
+        if self._is_cancelled():
+            return {
+                "outcome": {
+                    "ok": True,
+                    "status": "cancelled",
+                    "summary": "任务已由用户主动中止，已完成阶段的产物已保留。",
+                },
+                "record_hash": self.record_hash(),
+            }
         reply = self.chat(request.messages, request.schemas)
         self.store.record_model_call({"purpose": "main", **reply.metadata()})
         emit_event(
@@ -259,57 +284,61 @@ class Agent:
             name = call["function"]["name"]
             identifier = None
             elapsed_ms = 0.0
-            try:
-                arguments = json.loads(call["function"]["arguments"])
-            except json.JSONDecodeError as error:
-                result = {"ok": False, "error": f"工具参数不是有效 JSON：{error}"}
+            if self._is_cancelled():
+                result: Any = {"ok": False, "status": "cancelled", "cancelled": True, "error": "任务已中止，该调用未启动。"}
             else:
-                if not isinstance(arguments, dict):
-                    result = {"ok": False, "error": "工具参数必须是 JSON 对象。"}
-                elif name not in state["callable_names"]:
-                    result = {"ok": False, "error": f"本次没有提供工具 {name}，请核对可用工具列表。"}
-                elif name == "finish_task" and len(calls) != 1:
-                    result = {"ok": False, "error": "finish_task 必须单独调用。"}
+                try:
+                    arguments = json.loads(call["function"]["arguments"])
+                except json.JSONDecodeError as error:
+                    result = {"ok": False, "error": f"工具参数不是有效 JSON：{error}"}
                 else:
-                    message.setdefault("executions", {})[call["id"]] = "started"
-                    self.store.save(self.messages)
-                    emit_event(self.on_event, "tool_started", self.store.session_id, tool=name, call_id=call["id"])
-                    if self.history is not None:
-                        identifier = execution_id(state["model_index"], slot)
-                        record_history(
-                            self.history.begin, state["model_index"], slot, call,
-                            self.registry.get(name).execution_metadata,
+                    if not isinstance(arguments, dict):
+                        result = {"ok": False, "error": "工具参数必须是 JSON 对象。"}
+                    elif name not in state["callable_names"]:
+                        result = {"ok": False, "error": f"本次没有提供工具 {name}，请核对可用工具列表。"}
+                    elif name == "finish_task" and len(calls) != 1:
+                        result = {"ok": False, "error": "finish_task 必须单独调用。"}
+                    else:
+                        message.setdefault("executions", {})[call["id"]] = "started"
+                        self.store.save(self.messages)
+                        emit_event(self.on_event, "tool_started", self.store.session_id, tool=name, call_id=call["id"])
+                        if self.history is not None:
+                            identifier = execution_id(state["model_index"], slot)
+                            record_history(
+                                self.history.begin, state["model_index"], slot, call,
+                                self.registry.get(name).execution_metadata,
+                            )
+                        if name not in PASSIVE_TOOLS:
+                            state["execution_started"] = True
+                        started = perf_counter()
+                        try:
+                            result = self.registry.execute(name, arguments)
+                        except Exception as error:
+                            if identifier is not None:
+                                record_history(self.history.raised, identifier, error, (perf_counter() - started) * 1000)
+                            raise
+                        elapsed_ms = (perf_counter() - started) * 1000
+                        if name == "search_qgis_tools" and isinstance(result, list) and self.load_qgis_tool is not None:
+                            algorithms = list(state["algorithms"])
+                            for item in result:
+                                tool = self.load_qgis_tool(item["algorithm_id"])
+                                if item["algorithm_id"] in algorithms:
+                                    algorithms.remove(item["algorithm_id"])
+                                algorithms.append(item["algorithm_id"])
+                                item["tool_name"] = tool.name
+                            state["algorithms"] = algorithms
+                        if name == "finish_task" and result["ok"]:
+                            result = self.accept_finish(result, state)
+                        message["executions"][call["id"]] = "finished"
+                        tool_outputs = result.get("outputs", []) if isinstance(result, dict) and "outputs" in result else []
+                        emit_event(
+                            self.on_event, "tool_finished", self.store.session_id,
+                            tool=name, call_id=call["id"], ok=result.get("ok") if isinstance(result, dict) else True,
+                            elapsed_ms=elapsed_ms, outputs=tool_outputs,
                         )
-                    if name not in PASSIVE_TOOLS:
-                        state["execution_started"] = True
-                    started = perf_counter()
-                    try:
-                        result = self.registry.execute(name, arguments)
-                    except Exception as error:
-                        if identifier is not None:
-                            record_history(self.history.raised, identifier, error, (perf_counter() - started) * 1000)
-                        raise
-                    elapsed_ms = (perf_counter() - started) * 1000
-                    if name == "search_qgis_tools" and isinstance(result, list) and self.load_qgis_tool is not None:
-                        algorithms = list(state["algorithms"])
-                        for item in result:
-                            tool = self.load_qgis_tool(item["algorithm_id"])
-                            if item["algorithm_id"] in algorithms:
-                                algorithms.remove(item["algorithm_id"])
-                            algorithms.append(item["algorithm_id"])
-                            item["tool_name"] = tool.name
-                        state["algorithms"] = algorithms
-                    if name == "finish_task" and result["ok"]:
-                        result = self.accept_finish(result, state)
-                    message["executions"][call["id"]] = "finished"
-                    emit_event(
-                        self.on_event, "tool_finished", self.store.session_id,
-                        tool=name, call_id=call["id"], ok=result.get("ok") if isinstance(result, dict) else True,
-                        elapsed_ms=elapsed_ms,
-                    )
             if name in {"remember_memory", "forget_memory"}:
                 errors = set(state["memory_errors"])
-                if result.get("ok"):
+                if isinstance(result, dict) and result.get("ok"):
                     errors.discard(name)
                     state["background"] = self.recall(state["turn_start"])
                 else:
@@ -322,6 +351,12 @@ class Agent:
             self.messages.append(stored)
             self.store.save(self.messages)
             logger.info("工具 %s：%s", name, stored["content"][:1200])
+        if self._is_cancelled() and state.get("outcome") is None:
+            state["outcome"] = {
+                "ok": True,
+                "status": "cancelled",
+                "summary": "任务已由用户主动中止，子进程树已清理，已完成阶段的产物已保留。",
+            }
         state["model_index"] = len(self.messages)
         state["record_hash"] = self.record_hash()
         if self.memory_turn is not None:

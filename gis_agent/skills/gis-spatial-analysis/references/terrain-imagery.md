@@ -16,6 +16,15 @@ Use reliable, spatially distributed correspondences to estimate an appropriate t
 
 Keep an unverified alignment as a diagnostic candidate. Describe its evidence as UNKNOWN and keep dependent class updates, zonal statistics and maps conditional. Continue independent work where possible. Reprojection resamples known coordinates; it cannot recover unknown georeferencing.
 
+## Radiometric scaling and non-scale-invariant indices
+
+Normalized ratios without additive terms (such as NDVI or NDWI) cancel a shared positive multiplicative scale factor when band offsets are zero, but indices with dimensionless additive constants (such as SAVI `(1 + L) * (NIR - Red) / (NIR + Red + L)` with `L = 0.5`, or EVI) are defined in `[0, 1]` surface-reflectance units and are NOT scale-invariant. Substituting unscaled `0..10000` integer DN directly into `NIR + Red + 0.5` reduces the soil-adjustment constant by four orders of magnitude and changes the physical index value.
+
+Before computing spectral indices or terrain derivatives, inspect band `dtype`, `colorinterp`, `scale`, `offset`, `unit`, `nodata` and the overview value range:
+- Apply documented sensor `scale` and `offset` metadata first when present.
+- Distinguish three- or four-band `uint8` display composites (`0..255` repeated or RGB channels plus alpha) from calibrated physical elevation or reflectance rasters; never label display-quantized roughness or slope as metric elevation units.
+- When a multispectral raster has `0..10000`-scale integer values without explicit `scale` metadata and the task requests an additive-constant index such as SAVI, do not silently treat raw DN as `[0, 1]` reflectance; evaluate or compare standard reflectance scaling (`DN / 10000`) alongside raw-unit behavior and state the calibration limitation explicitly.
+
 ## Catchments and terrain surfaces
 
 Define whether a requested basin means the complete upstream contributing area at one outlet, a nonoverlapping subbasin partition, or the water-level-connected inundation region. Nested outlets have overlapping complete catchments. Simultaneously seeding every outlet and stopping propagation at the next outlet produces inter-outlet partitions. Check a nested pair against accumulation, accounting for cell area, self-cell counting, masks and D8 versus multiple-flow routing.

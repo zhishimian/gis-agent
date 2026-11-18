@@ -1,15 +1,17 @@
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 import hashlib
 import os
 from pathlib import Path
+from threading import Event
 from typing import Any
 from uuid import uuid4
 
 from openai import DefaultHttpxClient, OpenAI
 
+from gis_agent.adapters.stubs import WorkspaceContext
 from gis_agent.agent import Agent
 from gis_agent.config import AppConfig
 from gis_agent.core.auxiliary import AuxiliaryCalls
@@ -46,6 +48,16 @@ class Conversation:
     agent: Agent
     messages: list[dict[str, Any]]
     output_dir: Path
+    cancel_event: Event = field(default_factory=Event)
+    workspace_context: WorkspaceContext | None = None
+
+    def request_stop(self) -> None:
+        """供桌面端与 QGIS 插件主线程安全调用，协作式中止当前轮次并回收子进程树。"""
+        self.cancel_event.set()
+
+    def update_workspace_context(self, context: WorkspaceContext | None) -> None:
+        self.workspace_context = context
+        self.agent.workspace_context = context.to_dict() if context is not None else None
 
     @property
     def pending(self) -> bool:
@@ -59,6 +71,7 @@ class Conversation:
         if self.waiting:
             return self.reply(text)
         self._verify_boundary()
+        self.cancel_event.clear()
         self.messages.append({"role": "user", "origin": "user", "content": text})
         return self.agent.run(self.messages)
 
@@ -110,6 +123,7 @@ class Conversation:
         if any(m.get("reply_id") == reply_id for m in self.messages):
             raise ValueError("该reply_id已提交，不重复执行。")
         self._verify_boundary()
+        self.cancel_event.clear()
         self.messages.append(
             {
                 "role": "user",
@@ -139,11 +153,12 @@ class Conversation:
             raise ValueError("补充信息与原等待检查点不符，拒绝自动执行。")
         if self.messages != self.agent.store.read_record():
             raise ValueError("Session记录已变化。")
+        self.cancel_event.clear()
         return self.agent.run(self.messages)
 
     def cancel(self) -> dict:
         if self.pending or not self.waiting:
-            raise ValueError("只允许取消已安全等待的任务；运行中任务先保留现有现场。")
+            raise ValueError("只允许取消已安全等待的任务；运行中任务请调用 request_stop()。")
         self._verify_boundary()
         waiting = self.waiting
         result = {
@@ -171,6 +186,7 @@ class Conversation:
         return result
 
     def resume(self) -> dict[str, Any]:
+        self.cancel_event.clear()
         return self.agent.resume(self.messages)
 
 
@@ -196,6 +212,8 @@ class AgentFactory:
         allowed_write_roots: tuple[Path, ...] = (),
         protected_paths: tuple[Path, ...] = (),
         on_event: EventCallback | None = None,
+        cancel_event: Event | None = None,
+        workspace_context: WorkspaceContext | None = None,
     ) -> Agent:
         plan = Plan.from_messages(messages)
         registry = ToolRegistry()
@@ -207,7 +225,13 @@ class AgentFactory:
         if self.qgis is not None and self.catalog is not None:
             qgis_tools = [
                 make_search_tool(self.catalog, self.qgis, help_cache),
-                make_run_qgis_tool(self.qgis, self.catalog, help_cache, protected_paths=protected_paths),
+                make_run_qgis_tool(
+                    self.qgis,
+                    self.catalog,
+                    help_cache,
+                    protected_paths=protected_paths,
+                    cancel_event=cancel_event,
+                ),
             ]
         tools = [
             *builtin_tools,
@@ -219,6 +243,7 @@ class AgentFactory:
                 self.config.font_files,
                 watch_roots=(output_dir,),
                 protected_paths=protected_paths,
+                cancel_event=cancel_event,
             ),
             *planning,
             make_session_tool(store),
@@ -231,6 +256,7 @@ class AgentFactory:
             tools.extend(make_memory_tools(memory, store, messages, turn))
         for tool in tools:
             registry.register(tool)
+        ws_dict = workspace_context.to_dict() if workspace_context is not None else None
         return Agent(
             registry=registry,
             base_tools=tools,
@@ -255,21 +281,38 @@ class AgentFactory:
             checkpointer=saver,
             history=history,
             on_event=on_event,
+            cancel_event=cancel_event,
+            workspace_context=ws_dict or None,
         )
 
 
 @contextmanager
-def open_conversation(config: AppConfig, session_id: str) -> Iterator[Conversation]:
+def open_conversation(
+    config: AppConfig,
+    session_id: str,
+    *,
+    api_key: str | None = None,
+    on_event: EventCallback | None = None,
+    extra_tools: list[Tool] | None = None,
+    workspace_context: WorkspaceContext | None = None,
+    allowed_write_roots: tuple[Path, ...] = (),
+    protected_paths: tuple[Path, ...] = (),
+    cancel_event: Event | None = None,
+) -> Iterator[Conversation]:
+    resolved_key = (api_key or os.environ.get(config.api_key_env, "")).strip()
+    if not resolved_key:
+        raise ValueError(f"未提供模型密钥，请显式传入 api_key 或设置环境变量 {config.api_key_env}。")
+    active_cancel = cancel_event if cancel_event is not None else Event()
     store = SessionStore(config.session_root, session_id)
     config.session_root.mkdir(parents=True, exist_ok=True)
     output_dir = config.output_root / session_id
     output_dir.mkdir(parents=True, exist_ok=True)
     messages = store.read_record()
-    qgis = QGISClient(config.qgis.process_launcher) if config.qgis is not None else None
+    qgis = QGISClient(config.qgis.process_launcher, cancel_event=active_cancel) if config.qgis is not None else None
     catalog = load_catalog(qgis) if qgis is not None else None
     with (
         OpenAI(
-            api_key=os.environ[config.api_key_env],
+            api_key=resolved_key,
             base_url=config.model.base_url,
             max_retries=config.max_retries,
             http_client=DefaultHttpxClient(trust_env=config.trust_env),
@@ -291,7 +334,19 @@ def open_conversation(config: AppConfig, session_id: str) -> Iterator[Conversati
                 supports_memory=memory is not None,
                 skills=skill_index(),
             ),
+            extra_tools=extra_tools,
             memory=memory,
             turn=turn,
+            allowed_write_roots=allowed_write_roots,
+            protected_paths=protected_paths,
+            on_event=on_event,
+            cancel_event=active_cancel,
+            workspace_context=workspace_context,
         )
-        yield Conversation(agent, messages, output_dir)
+        yield Conversation(
+            agent,
+            messages,
+            output_dir,
+            cancel_event=active_cancel,
+            workspace_context=workspace_context,
+        )

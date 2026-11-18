@@ -1,4 +1,4 @@
-# GIS-Agent V9.0
+# GIS-Agent V9.0.1
 
 单 Agent GIS 助手。纯 Python 状态机（`AgentLoopRunner`）与标准库 SQLite 检查点（`SqliteCheckpointer`）管理模型与工具往返，核心运行时零 `langgraph` / `tokenizers` 依赖。支持独立 Python（`uv` 锁定环境）与 QGIS Processing / PyQGIS 双后端执行空间计算，Matplotlib、GeoPandas、Rasterio 负责静态制图。
 
@@ -22,8 +22,8 @@ python main.py
 
 三端适配层位于 `gis_agent/adapters/`：
 - `cli.py`：终端交互与离线会话查询入口。
-- `harness_mcp.py`：面向外部通用 Coding Agent（Claude Code / Codex / Cursor）暴露的精简静态 GIS 工具集。
-- `stubs.py`：QGIS 插件端（`QgsTask` + 停靠面板）与独立桌面端事件流骨架。
+- `harness_mcp.py`：面向外部通用 Coding Agent（Claude Code / Codex / Cursor）的标准 STDIO MCP 服务端（`python -m gis_agent.adapters.harness_mcp` 或 `gis-agent-mcp`），零内部循环依赖，直接暴露内环空间探针、QGIS 算法网关与专业 Skills。
+- `stubs.py`：QGIS 插件端与独立桌面端边界协议（`WorkspaceContext` 画布上下文注入、`EventCallback` 实时产物事件流、`Conversation.request_stop()` 线程安全子进程树中断）。
 
 记录保存在 `sessions/`，成果保存在 `outputs/`。输入数据保持原样。三个 Skills 按需读取：
 

@@ -281,3 +281,16 @@ GABench原工作区有大量修改，保留原状。50个LFS指针的对象已�
 - **Slice 3（`uv`环境管理、纯Python状态循环与三端适配骨架）**：新增`pyproject.toml`与`uv.lock`，按最小核心、`cli`、`vision`、`geo`、`dev`分组声明依赖。新增`gis_agent/core/loop.py`（`AgentLoopRunner`）与`gis_agent/persistence/checkpoints.py`（`SqliteCheckpointer`），移除`gis_agent/`内全部`langgraph`与`tokenizers`硬依赖及`Pillow`顶层硬导入，支持带窄窗口核对的断点对齐（仅当Session末尾工具批次消息完整闭合且旧前缀一致时对齐检查点，不自动重放未闭合副作用工具）。`GIS_AGENT_QGIS_DIR`改为可选配置；新增`gis_agent/adapters/{cli.py, harness_mcp.py, stubs.py}`三端入口骨架。
 
 本地离线全量回归通过（`tests/`与`benchmarks/geoagentbench/test_runner.py`），收费`live`项排除，实际收费API调用为0。Slice 4小样本线上消融实验待后续按需授权启动。
+
+
+## V9.0 方案 A 实测与 V9.0.1 双环边界收口
+
+2026-11-18（续）：授权启动方案 A（GABench 6道痛点题`04,09,12,25,32,49` + GeoBenchX 3道未见盲测题），共用SQLite原子账本（上限15元），9题加探针实估合计`6.0233`元，KV Cache命中率`93.6%～95.3%`，报告见`outputs/v9_plan_a_20261118/report.md`。GABench 6题由V0的`1正确/3部分/1超时失败/1存储崩溃`提升至`3正确/3部分/0失败/0崩溃`（第49题全程0报错完成，第25题补齐图件且像元误差0，第09题900s超时回收后自主改写56瓦片无损分块算出`47.57%`对标参考值`47.93%`）；GeoBenchX盲测中缺数据题`TASK_138450` 14轮0幻觉返回`blocked`，积雪Amtrak题`TASK_883928`独立复算531站及前五州零误差。
+
+随后按`docs/v9.0.1-interface-refinement-design.md`完成V9.0.1收口（0收费调用）：
+1. 新增`gis_agent/runtime/paths.py`统一`package_dir()`、`import_root()`与`package_resource()`，消除源码目录层级`parents[2]`硬编码，兼容虚拟环境、QGIS插件目录及冻结打包。
+2. `runtime/runner.py`、`integrations/qgis/client.py`、`agent.py`与`application.py`打通线程安全`cancel_event`。执行器以最长 0.2 秒的等待步长检查停止信号，随后回收进程树，闭合会话消息和检查点。`open_conversation`支持显式`api_key`、`on_event`、`extra_tools`、`workspace_context`参数。`tool_finished`事件携带`outputs`。
+3. `adapters/harness_mcp.py`落地纯标准库JSON-RPC 2.0 STDIO MCP服务端（支持行分隔与`Content-Length`帧，注册`gis-agent-mcp`入口并新增`list_gis_skills`）。
+4. 根据实测反馈将`run_python_script`单次`timeout_sec`收紧为默认`180s`、上限`600s`，并在`terrain-imagery.md`补充含加性常数光谱指数（如SAVI）的定标量纲提示。
+
+2026-11-18 离线复验：在项目 Conda 环境运行 `python -B -m pytest tests benchmarks/geoagentbench/test_runner.py -k "not live" -q -p no:cacheprovider`，119 项通过，1 项被筛除。停止用例补测确认派生进程已退出，当轮 1.105 秒内返回，同一会话可继续使用。0.2 秒是轮询等待步长，进程树回收本身的耗时未单独计量。用项目现有 QGIS 配置启动独立 MCP 进程，`list_gis_skills`、`probe_gis_environment` 和 `inspect_data` 均返回成功，正确读取含 1 个点的 GeoJSON。运行空间数据工具时，`--project` 指向的新目录需要配好 GIS Python，可通过 `GIS_AGENT_QGIS_DIR` 或 `GIS_AGENT_PYTHON` 指定。

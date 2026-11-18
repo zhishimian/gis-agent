@@ -10,6 +10,7 @@ import typer
 
 from gis_agent.persistence.executions import ExecutionHistory
 from gis_agent.persistence.sessions import SessionStore
+from gis_agent.runtime.paths import default_project_dir
 
 
 app = typer.Typer(add_completion=False)
@@ -27,7 +28,7 @@ def show_result(result: dict) -> None:
 
 
 def chat(
-    project: Annotated[Path, typer.Option(help="项目目录，也是默认记录目录。")] = Path(__file__).resolve().parents[1],
+    project: Annotated[Path, typer.Option(help="项目目录，也是默认记录目录。")] = default_project_dir(),
     session: Annotated[str | None, typer.Option(help="会话 ID；不填时交互输入。")] = None,
 ) -> None:
     from gis_agent.application import open_conversation
@@ -68,7 +69,7 @@ def chat(
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    project: Annotated[Path, typer.Option(help="项目目录。 ")] = Path(__file__).resolve().parents[1],
+    project: Annotated[Path, typer.Option(help="项目目录。 ")] = default_project_dir(),
     session: Annotated[str | None, typer.Option(help="会话 ID。 ")] = None,
 ) -> None:
     ctx.obj = {"project": project, "session": session}

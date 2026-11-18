@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 from pathlib import Path
+from threading import Event
 from time import perf_counter
 from typing import Any
 
@@ -110,9 +111,10 @@ def run_process(
     env: dict[str, str],
     stdout_path: Path,
     stderr_path: Path,
-    timeout_sec: int = 300,
+    timeout_sec: int = 180,
     watch_roots: tuple[Path, ...] = (),
     protected_paths: tuple[Path, ...] = (),
+    cancel_event: Event | None = None,
 ) -> dict[str, Any]:
     if not 1 <= timeout_sec <= 3600:
         raise ValueError("timeout_sec 必须在 1 到 3600 秒之间。")
@@ -120,7 +122,9 @@ def run_process(
     before_protected = snapshot_files(protected_paths) if protected_paths else {}
     flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
     started = perf_counter()
+    deadline = started + timeout_sec
     timed_out = False
+    cancelled = False
 
     with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
         process = subprocess.Popen(
@@ -132,12 +136,24 @@ def run_process(
             creationflags=flags,
             start_new_session=(os.name != "nt"),
         )
-        try:
-            returncode = process.wait(timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            terminate_process_tree(process)
-            returncode = -1
+        returncode = -1
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                terminate_process_tree(process)
+                returncode = -2
+                break
+            remaining = deadline - perf_counter()
+            if remaining <= 0:
+                timed_out = True
+                terminate_process_tree(process)
+                returncode = -1
+                break
+            try:
+                returncode = process.wait(timeout=min(0.2, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
 
     elapsed_ms = round((perf_counter() - started) * 1000, 2)
     after_outputs = snapshot_files(watch_roots) if watch_roots else {}
@@ -149,11 +165,19 @@ def run_process(
             if after_protected.get(path) != state
         )
 
-    status = "timed_out" if timed_out else ("succeeded" if returncode == 0 and not tampered else "failed")
+    if cancelled:
+        status = "cancelled"
+    elif timed_out:
+        status = "timed_out"
+    elif returncode == 0 and not tampered:
+        status = "succeeded"
+    else:
+        status = "failed"
     return {
         "status": status,
         "returncode": returncode,
         "timed_out": timed_out,
+        "cancelled": cancelled,
         "elapsed_ms": elapsed_ms,
         "before_outputs": before_outputs,
         "after_outputs": after_outputs,
