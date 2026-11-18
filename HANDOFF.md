@@ -294,3 +294,10 @@ GABench原工作区有大量修改，保留原状。50个LFS指针的对象已�
 4. 根据实测反馈将`run_python_script`单次`timeout_sec`收紧为默认`180s`、上限`600s`，并在`terrain-imagery.md`补充含加性常数光谱指数（如SAVI）的定标量纲提示。
 
 2026-11-18 离线复验：在项目 Conda 环境运行 `python -B -m pytest tests benchmarks/geoagentbench/test_runner.py -k "not live" -q -p no:cacheprovider`，119 项通过，1 项被筛除。停止用例补测确认派生进程已退出，当轮 1.105 秒内返回，同一会话可继续使用。0.2 秒是轮询等待步长，进程树回收本身的耗时未单独计量。用项目现有 QGIS 配置启动独立 MCP 进程，`list_gis_skills`、`probe_gis_environment` 和 `inspect_data` 均返回成功，正确读取含 1 个点的 GeoJSON。运行空间数据工具时，`--project` 指向的新目录需要配好 GIS Python，可通过 `GIS_AGENT_QGIS_DIR` 或 `GIS_AGENT_PYTHON` 指定。
+
+
+## V9.0.2 独立 `uv` 运行环境与 90% 上下文自适应压缩
+
+2026-11-18（续）：补齐 Carbon 蓝图第 8、9 两项底座尾巴（0 收费调用）：
+1. **按模型可用输入窗口 90% 触发主动压缩**：借鉴 `learn-claude-code` 上下文水位设计并在 `ContextConfig` 新增 `compact_ratio: float = 0.90`（支持 `GIS_AGENT_COMPACT_RATIO` 覆写）。`ContextManager.prepare` 在超过 `int(request_token_limit * compact_ratio)` 且存在可折叠旧工具批次时提前触发摘要压缩，不再与固定 `10k/100k` 魔数绑定；低于 90% 时保持前缀不变以保护 KV Cache。
+2. **脱离 Conda 的独立 `uv` 运行验证**：更新测试套件中 5 处残留 `langgraph` 校验器导入改用 `SqliteCheckpointer`/`MemoryCheckpointer`，将 `.venv/` 加入 `.gitignore`；实机执行 `uv sync --extra cli --extra dev --extra geo` 在独立 `.venv` 装齐 42 个完整科学计算包并全量脱离 Conda 运行 `tests/` 与 `benchmarks/geoagentbench/test_runner.py`（`-k "not live"`），**122 项全部通过**（`152.83s`），含无桌面 QGIS 条件下用独立 GeoPython 完成 `inspect_data` 与 `export_figure` 成图验收。

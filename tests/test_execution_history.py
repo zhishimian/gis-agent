@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from langgraph.checkpoint.memory import InMemorySaver
+from gis_agent.persistence.checkpoints import MemoryCheckpointer as InMemorySaver
 
 from gis_agent.core.model import ModelConfig
 from gis_agent.integrations.llm import make_token_counter

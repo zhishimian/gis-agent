@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 from dotenv import dotenv_values
-from langgraph.checkpoint.sqlite import SqliteSaver
+from gis_agent.persistence.checkpoints import SqliteCheckpointer as SqliteSaver
 from openai import DefaultHttpxClient, OpenAI
 
 from gis_agent import application

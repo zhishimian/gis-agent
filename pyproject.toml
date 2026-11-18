@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gis-agent"
-version = "9.0.1"
+version = "9.0.2"
 description = "Lightweight, verifiable GIS Coding Agent with multi-endpoint adapters"
 readme = "README.md"
 requires-python = ">=3.11"

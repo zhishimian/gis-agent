@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'tests')]
 socket.socket.connect=lambda *_: (_ for _ in ()).throw(AssertionError('offline worker'))
-from langgraph.checkpoint.sqlite import SqliteSaver
+from gis_agent.persistence.checkpoints import SqliteCheckpointer as SqliteSaver
 from gis_agent.persistence.sessions import SessionStore
 from gis_agent.tools.base import Tool
 from test_v84 import build

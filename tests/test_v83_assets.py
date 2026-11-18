@@ -166,7 +166,7 @@ def test_staged_example_history_and_tail_repair_reuse_prefix(qgis_dir, tmp_path)
     from openai import OpenAI
     from dataclasses import replace
     from functools import partial
-    from langgraph.checkpoint.memory import InMemorySaver
+    from gis_agent.persistence.checkpoints import MemoryCheckpointer as InMemorySaver
     from gis_agent.application import AgentFactory
     from gis_agent.config import AppConfig
     from gis_agent.core.model import ModelConfig
@@ -242,7 +242,7 @@ def test_staged_example_history_and_tail_repair_reuse_prefix(qgis_dir, tmp_path)
 
 
 def test_recent_hints_do_not_add_rounds_to_ordinary_python(qgis_dir, tmp_path, monkeypatch):
-    from langgraph.checkpoint.memory import InMemorySaver
+    from gis_agent.persistence.checkpoints import MemoryCheckpointer as InMemorySaver
     from functools import partial
     from test_acceptance import make_graph_agent, reply
     from gis_agent.core import context

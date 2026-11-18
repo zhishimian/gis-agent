@@ -45,12 +45,19 @@ class ContextConfig:
     recent_batches: int = 2
     recent_users: int = 2
     schema_token_limit: int = 8000
+    compact_ratio: float = 0.90
 
     def __post_init__(self) -> None:
         if min(self.request_token_limit, self.tool_limit, self.summary_limit, self.summary_chunk_characters, self.schema_token_limit) < 512:
             raise ValueError("请求 token 预算和各项字符预算不能小于 512。")
         if min(self.recent_batches, self.recent_users) < 1:
             raise ValueError("保留数量必须大于零。")
+        if not 0.1 <= self.compact_ratio <= 1.0:
+            raise ValueError("compact_ratio 必须在 0.1 到 1.0 之间。")
+
+    @property
+    def compact_token_limit(self) -> int:
+        return int(self.request_token_limit * self.compact_ratio)
 
 
 @dataclass
@@ -200,6 +207,7 @@ class ContextManager:
         if refs := recent_execution_refs(messages):
             state['recent_execution_refs'] = refs
         selected = list(tools)
+        compact_limit = self.config.compact_token_limit
         while True:
             candidates = [tool for tool in selected if tool.name not in self.pinned_names]
             schemas = [tool.schema() for tool in sorted(selected, key=lambda tool: tool.name)]
@@ -216,7 +224,7 @@ class ContextManager:
             if size > self.config.request_token_limit and len(candidates) > 1:
                 selected.remove(candidates[0])
                 continue
-            if size <= self.config.request_token_limit:
+            if size <= compact_limit:
                 break
             batches = [(start, end) for start, end in units if messages[start].get("tool_calls")]
             tail = batches if batches else units
@@ -224,6 +232,8 @@ class ContextManager:
             if target > self.covered:
                 self.compact(messages, target)
                 continue
+            if size <= self.config.request_token_limit:
+                break
             if candidates:
                 selected.remove(candidates[0])
                 continue

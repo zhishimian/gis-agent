@@ -4,8 +4,8 @@ from pathlib import Path
 from contextlib import contextmanager
 
 import pytest
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.checkpoint.memory import InMemorySaver
+from gis_agent.persistence.checkpoints import MemoryCheckpointer as InMemorySaver
+from gis_agent.persistence.checkpoints import SqliteCheckpointer as SqliteSaver
 from typer.testing import CliRunner
 
 from gis_agent.application import Conversation
