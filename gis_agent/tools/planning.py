@@ -17,6 +17,8 @@ def finish_task(
     unresolved: list[str] | None = None,
     question: str | None = None,
     reason: str | None = None,
+    acknowledged_anomalies: list[str] | None = None,
+    evidence: list[str] | None = None,
     *,
     output_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -28,6 +30,12 @@ def finish_task(
         return {"ok": False, "error": "artifacts 需要填写实际文件或数据集目录的绝对路径。"}
     if unresolved is not None and (not isinstance(unresolved, list) or any(not isinstance(item, str) for item in unresolved)):
         return {"ok": False, "error": "unresolved 需要填写未完成或无法确认的事项列表。"}
+    if acknowledged_anomalies is not None and (
+        not isinstance(acknowledged_anomalies, list) or any(not isinstance(item, str) for item in acknowledged_anomalies)
+    ):
+        return {"ok": False, "error": "acknowledged_anomalies 需要填写已核实确认的异常编码字符串列表。"}
+    if evidence is not None and (not isinstance(evidence, list) or any(not isinstance(item, str) for item in evidence)):
+        return {"ok": False, "error": "evidence 需要填写关键取证结论字符串列表。"}
     missing = [path for path in artifacts or [] if not Path(path).is_absolute() or not Path(path).exists()]
     if missing:
         return {"ok": False, "error": "成果路径不存在或未使用绝对路径。", "paths": missing}
@@ -64,6 +72,10 @@ def finish_task(
         result["question"] = question.strip()
     if reason:
         result["reason"] = reason
+    if acknowledged_anomalies:
+        result["acknowledged_anomalies"] = list(dict.fromkeys(item.strip() for item in acknowledged_anomalies if item.strip()))
+    if evidence:
+        result["evidence"] = list(dict.fromkeys(item.strip() for item in evidence if item.strip()))
     if output_dir is not None and output_dir.is_dir():
         files = snapshot_files((output_dir,), max_entries=200)
         result["workspace_files"] = [
@@ -109,11 +121,11 @@ def make_planning_tools(plan: Plan, output_dir: Path | None = None) -> list[Tool
             name="finish_task",
             description=(
                 "报告本轮结束状态和面向用户的说明，必须单独调用。"
-                "completed 表示所需工作已完成，artifacts 列出实际非空文件或数据集目录。"
+                "completed 表示所需工作已完成，artifacts 列出实际非空文件或数据集目录；若交付产物触发空间告警信号，需先修复或经核实后在 acknowledged_anomalies 中确认。"
                 "unresolved只列影响用户要求成立的未完成或未知事项，存在时使用partial/blocked/needs_input。"
                 "正常数值近似、图层命名和格式说明写summary；实际执行失败需解决或如实停止。"
                 "needs_input以question提出必要问题并等待原Session补充；reason说明数据缺失/业务选择/质量/不支持/能力限制。"
-                "partial保留已有成果并列unresolved；blocked无法继续；用户取消由客户端处理。普通代码错误先自主修复。"
+                "partial保留已有成果并列unresolved；blocked无法继续（可在仅完成只读探查确认缺失前提后零写入直接诚实上报）；用户取消由客户端处理。普通代码错误先自主修复。"
                 "answer 用于普通问答，可先读取资料；本轮已写入或计算成果时报告任务状态。"
             ),
             parameters={
@@ -125,6 +137,16 @@ def make_planning_tools(plan: Plan, output_dir: Path | None = None) -> list[Tool
                     "reason": {"type": "string", "enum": ["missing_input", "business_decision", "data_quality", "unsupported", "capability_limit"]},
                     "artifacts": {"type": "array", "items": {"type": "string"}},
                     "unresolved": {"type": "array", "items": {"type": "string"}, "description": "尚未满足或无法确认的用户要求。非空时不能completed。"},
+                    "acknowledged_anomalies": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "当交付文件带有预期内的空间告警信号（如 ZERO_FEATURES、MISSING_CRS）时，填入已核实确认的异常编码。",
+                    },
+                    "evidence": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "可选：简短客观取证结论或数据诊断摘要（如守恒差值、缺失图层名）。",
+                    },
                 },
                 "required": ["status", "summary"],
                 "additionalProperties": False,

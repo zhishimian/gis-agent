@@ -3,6 +3,9 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import logging
+import os
+from pathlib import Path
+import re
 from threading import Event
 from time import perf_counter
 from typing import Any, TypedDict
@@ -14,6 +17,7 @@ from gis_agent.core.loop import AgentLoopRunner
 from gis_agent.core.memory import MemoryStore, MemoryTurn, extract_memories
 from gis_agent.core.model import ModelReply
 from gis_agent.core.planning import Plan
+from gis_agent.persistence.evidence import tool_result
 from gis_agent.persistence.executions import ExecutionHistory, execution_id, record_history
 from gis_agent.persistence.json import json_text
 from gis_agent.persistence.sessions import SessionStore, message_units
@@ -219,6 +223,8 @@ class Agent:
             business["workspace_context"] = self.workspace_context
         if self.runtime_capabilities:
             business["runtime_capabilities"] = self.runtime_capabilities
+        if alert := _stagnation_alert(self.store, self.messages[state["turn_start"] :]):
+            business["stagnation_alert"] = alert
         latest = self.messages[business["latest_user_message"]]
         if latest.get("in_reply_to"):
             business["answer_to_request"] = latest["in_reply_to"]
@@ -381,6 +387,42 @@ class Agent:
             return {"ok": False, "error": "cancelled需用户明确取消；无法完成请用blocked/partial或提出必要问题。"}
         if status in {"partial", "blocked", "needs_input"} and self.plan.unfinished():
             result = result | {"unfinished_plan": self.plan.unfinished()}
+        if status == "completed":
+            anomalies_by_path, verified_after, last_failed = _artifact_diagnostics(
+                self.store, self.messages[state["turn_start"] :]
+            )
+            ack = set(result.get("acknowledged_anomalies") or [])
+            pending_l2: list[dict[str, Any]] = []
+            for art in result.get("artifacts") or []:
+                norm = _norm_path(art)
+                anoms = anomalies_by_path.get(norm, [])
+                for anom in anoms:
+                    if anom.get("level") == "fatal":
+                        return {
+                            "ok": False,
+                            "error": f"交付产物存在致命读取异常（{anom.get('code')}），请修复后再 completed，或改用 partial/blocked。",
+                            "path": art,
+                            "anomaly": anom,
+                        }
+                if norm in last_failed:
+                    return {
+                        "ok": False,
+                        "error": "该交付产物关联的最近一次执行仍为失败状态；请重新运行成功并核验后再 completed，或改用 partial/blocked。",
+                        "path": art,
+                    }
+                if norm not in verified_after and "ALL" not in ack:
+                    for anom in anoms:
+                        if anom.get("level") == "warning" and anom.get("code") not in ack:
+                            pending_l2.append({**anom, "path": art})
+            if pending_l2:
+                return {
+                    "ok": False,
+                    "error": (
+                        "检测到交付产物存在空间告警信号，请先修复或核实；若确认为任务预期现象或原数据固有局限，"
+                        "请在 summary 中说明并在 acknowledged_anomalies 中传入对应编码后重试 finish_task，或改用 partial/blocked。"
+                    ),
+                    "anomalies": pending_l2,
+                }
         state["outcome"] = result
         return result
 
@@ -397,3 +439,146 @@ class Agent:
             self.store.record_model_call({"purpose": "memory_maintenance", **maintenance})
         emit_event(self.on_event, "turn_finished", self.store.session_id, status=outcome.get("status"))
         return {"outcome": outcome, "record_hash": self.record_hash(), "model_index": len(self.messages)}
+
+
+_EXC_RE = re.compile(r"\b([A-Za-z]+Error|Exception)\b")
+
+
+def _norm_path(raw: str) -> str:
+    clean = raw.split("|layername=", 1)[0]
+    try:
+        return os.path.normcase(str(Path(clean).expanduser().resolve()))
+    except OSError:
+        return os.path.normcase(clean)
+
+
+def _safe_tool_payload(store: SessionStore, item: dict[str, Any]) -> Any:
+    try:
+        return tool_result(store, item)
+    except Exception:
+        return None
+
+
+def _turn_call_index(messages_slice: list[dict[str, Any]]) -> dict[str, tuple[str, dict[str, Any]]]:
+    calls: dict[str, tuple[str, dict[str, Any]]] = {}
+    for msg in messages_slice:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            name = str(fn.get("name") or "")
+            raw_args = fn.get("arguments") or "{}"
+            try:
+                args = json.loads(raw_args) if isinstance(raw_args, str) else {}
+            except Exception:
+                args = {}
+            calls[str(tc.get("id") or "")] = (name, args if isinstance(args, dict) else {})
+    return calls
+
+
+def _failure_signature(tool_name: str, args: dict[str, Any], payload: dict[str, Any]) -> str:
+    target = ""
+    if tool_name == "run_python_script":
+        raw = args.get("script_path") or ""
+        target = Path(str(raw)).name if raw else ""
+    elif tool_name == "run_qgis_algorithm":
+        target = str(args.get("algorithm_id") or "")
+    err_text = str(payload.get("stderr") or payload.get("error") or "")
+    tail = "\n".join(err_text.splitlines()[-3:])
+    exc_match = _EXC_RE.findall(tail)
+    exc = exc_match[-1] if exc_match else next((line.strip()[:60] for line in err_text.splitlines() if line.strip()), "failed")
+    return ":".join(part for part in (tool_name, target, exc) if part)
+
+
+def _stagnation_alert(store: SessionStore, messages_slice: list[dict[str, Any]]) -> dict[str, Any] | None:
+    calls = _turn_call_index(messages_slice)
+    signatures: list[str] = []
+    for msg in reversed(messages_slice):
+        if msg.get("role") != "tool":
+            continue
+        call_id = str(msg.get("tool_call_id") or "")
+        name, args = calls.get(call_id, (str(msg.get("tool_name") or ""), {}))
+        if name in PASSIVE_TOOLS:
+            continue
+        payload = _safe_tool_payload(store, msg)
+        if isinstance(payload, dict) and payload.get("ok") is True:
+            break
+        if isinstance(payload, dict) and payload.get("ok") is False:
+            signatures.append(_failure_signature(name, args, payload))
+    if not signatures:
+        return None
+    latest = signatures[0]
+    repeated = sum(1 for sig in signatures if sig == latest)
+    count = len(signatures)
+    if count >= 5:
+        return {
+            "level": "escalate",
+            "consecutive_failures": count,
+            "repeated_signature": latest,
+            "advice": "连续执行失败已达上限；请勿继续微调同类重试，立即切换全新底层方法或调用 finish_task(status='blocked'|'needs_input'|'partial') 诚实报告已知阻碍。",
+        }
+    if repeated >= 2 or count >= 3:
+        return {
+            "level": "warn",
+            "consecutive_failures": count,
+            "repeated_signature": latest,
+            "advice": "同一错误连续出现；请停止盲目重跑，先用 inspect_data/summarize_fields 或极小样本探针核对输入与 Schema，或读取对应 Skill 参考文档切换路线。",
+        }
+    return None
+
+
+def _artifact_diagnostics(
+    store: SessionStore, messages_slice: list[dict[str, Any]]
+) -> tuple[dict[str, list[dict[str, Any]]], set[str], set[str]]:
+    calls = _turn_call_index(messages_slice)
+    anomalies_by_path: dict[str, list[dict[str, Any]]] = {}
+    verified_after: set[str] = set()
+    last_failed: set[str] = set()
+
+    for msg in messages_slice:
+        if msg.get("role") != "tool":
+            continue
+        call_id = str(msg.get("tool_call_id") or "")
+        name, args = calls.get(call_id, (str(msg.get("tool_name") or ""), {}))
+        payload = _safe_tool_payload(store, msg)
+        if not isinstance(payload, dict):
+            continue
+
+        if name == "run_python_script" or isinstance(payload.get("outputs"), list):
+            outputs = payload.get("outputs") or []
+            if payload.get("ok") is True:
+                for item in outputs:
+                    raw_p = item.get("path")
+                    if isinstance(raw_p, str):
+                        norm = _norm_path(raw_p)
+                        last_failed.discard(norm)
+                        anomalies_by_path[norm] = list(item.get("anomalies") or [])
+                        verified_after.discard(norm)
+            else:
+                for item in outputs:
+                    raw_p = item.get("path")
+                    if isinstance(raw_p, str):
+                        last_failed.add(_norm_path(raw_p))
+        elif name == "run_qgis_algorithm":
+            if payload.get("ok") is True:
+                outputs_map = payload.get("outputs") if isinstance(payload.get("outputs"), dict) else {}
+                anom_map = payload.get("anomalies") if isinstance(payload.get("anomalies"), dict) else {}
+                for key, raw_p in outputs_map.items():
+                    if isinstance(raw_p, str):
+                        norm = _norm_path(raw_p)
+                        last_failed.discard(norm)
+                        anomalies_by_path[norm] = list(anom_map.get(key) or [])
+                        verified_after.discard(norm)
+            elif isinstance(args.get("parameters"), dict):
+                for val in args["parameters"].values():
+                    if isinstance(val, str) and any(val.lower().endswith(ext) for ext in (".gpkg", ".tif", ".tiff", ".shp", ".geojson")):
+                        last_failed.add(_norm_path(val))
+        elif name in {"summarize_fields", "inspect_data", "check_spatial_relation"} and payload.get("ok") is True:
+            for key in ("source", "reference"):
+                if isinstance(args.get(key), str):
+                    verified_after.add(_norm_path(args[key]))
+            for src in args.get("sources") or ():
+                if isinstance(src, str):
+                    verified_after.add(_norm_path(src))
+
+    return anomalies_by_path, verified_after, last_failed

@@ -25,8 +25,8 @@ Python脚本由隔离进程执行，支持超时保护。Processing/PyQGIS初始
 用户明确要求记住或删除时调用对应工具。临时事实不自动当成长期默认。
 {% endif %}
 结束时单独调用finish_task。普通问答用answer；完成所需工作用completed并列实际非空artifacts。
-先用数据、元信息、Skills和小样本解决可恢复问题。关键输入或业务选择仍缺失时，不编造数据、CRS或道路连接；继续独立可完成部分。
-相同失败反复出现且没有新诊断时，换方法或停止受影响部分，准确说明阻碍；不要用无依据近似凑齐成果。
+先探测与核对数据要素、CRS及关键字段，再编写分析脚本。关键输入或业务选择缺失时，不编造数据、CRS或道路连接；继续独立可完成部分，并在首轮查清后直接以 blocked 或 needs_input 诚实上报（与 completed 同等正当）。
+工具返回中的 outputs[].anomalies / stagnation_alert 为客观诊断提醒：交付前修复缺陷，或经核实为预期现象后在 acknowledged_anomalies 与 summary 中明确披露；连续受阻优先切换方法或诚实止损。
 确需用户补充用needs_input，以question说明必要信息、影响和可提供内容；用户回答后在原Session继续，保留有效成果。不能可靠继续用blocked，有成果但要求未全满足用partial，列artifacts与unresolved。
 正常近似和格式说明放summary。执行失败如实报告，绕过清理不能当作修复。
 交付说明保持简短，写成果路径、实际检查范围和限制。核查覆盖只按已经取得的事实表述。

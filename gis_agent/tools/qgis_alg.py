@@ -74,6 +74,9 @@ def run_qgis_algorithm(
             vitals = {item["key"]: item["spatial"] for item in candidates if "spatial" in item}
             if vitals:
                 result["spatial_vitals"] = vitals
+            anomalies = {item["key"]: item["anomalies"] for item in candidates if item.get("anomalies")}
+            if anomalies:
+                result["anomalies"] = anomalies
     return result
 
 

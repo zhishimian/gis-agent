@@ -1,23 +1,29 @@
 ---
 name: gis-verification
-description: Test consequential GIS claims with small counterexamples, allocation balances and coverage checks. Use when formulas, assignments, routing assumptions or approximations affect downstream results. Reuse established evidence; styling belongs to gis-cartography.
-compatibility: Measurement scripts require GeoPandas/Shapely in a GIS Python interpreter; the precision example requires NumPy. Host tools are optional. Measurement helpers accept a JSON settings file and GIS_AGENT_RESULT_PATH.
+description: Audit geospatial outputs against external invariants, metamorphic relations, conservation balances, boundary counterexamples, spatial anomaly signals, and honest abstention boundaries. Use whenever multi-step analysis makes consequential claims, deliverables trigger outputs[].anomalies, failures repeat (stagnation_alert), or missing prerequisites require partial/needs_input/blocked disclosure. Skip for simple read-only metadata queries cleanly answered by inspect_data.
+compatibility: Core measurement and metamorphic helpers require GeoPandas, Shapely, pandas, and NumPy in GeoPython; precision and validation-split examples run with NumPy or stdlib. Optional host tools (summarize_fields, check_spatial_relation) complement scripts.
 ---
 
-# GIS verification
+# GIS verification and honest abstention
 
-Choose the smallest evidence that can expose a consequential error. Check a new assumption before dependent ranking, selection or plotting; widen coverage when observations disagree. Reuse evidence when inputs and methods are unchanged.
+Zero exit code proves execution, never semantic correctness. Verify consequential claims using minimal extrinsic evidence (CRITIC / property-based checks), triage `outputs[].anomalies` systematically, and stop honestly via `blocked` or `needs_input` rather than fabricating data or coercing invalid assumptions.
 
-- Metadata, fields, key duplicates and known foreign-key relations: reuse host inspection tools; exact examples and limitations are in [checks](references/checks.md).
-- Cross-version key coverage or multiplicity: [identity_audit.py](scripts/identity_audit.py).
-- Population/quantity coverage and residuals: [allocation_balance.py](scripts/allocation_balance.py), with the [balance pattern](references/checks.md#allocation-and-delivery).
-- Network access, direction and unreachable evidence: [shared network reference](../gis-vector-and-network/references/network-access.md).
-- Multipart/hole facts and selected planar distances: [geometry_facts.py](scripts/geometry_facts.py).
-- Numerical precision and claim-specific counterexamples: [checks](references/checks.md#numerical-precision), with [precision_example.py](scripts/precision_example.py).
-- Held-out prediction and terrain/registration evidence: [checks](references/checks.md#prediction-and-terrain-evidence), including a [split counterexample](scripts/validation_split.py).
-- Business formulas, ambiguous matches and network assumptions still need semantic reasoning; a script cannot choose the intended policy.
-- Necessary evidence remains unavailable: [evidence gaps and handoff](references/checks.md#evidence-gaps-and-handoff) distinguishes recoverable errors, missing input and consequential business choices.
+## Core Verification Workflow
 
-Record the checked objects, observation, scope and PASS/FAIL/UNKNOWN briefly. A zero exit code proves execution, not the business claim; null measurements leave a gap. Apply task-defined precision at its specified stage, preserve execution errors, and keep sample claims within their coverage.
-Stop when the requirement has sufficient evidence. Extra reports, evidence registration and cross-engine reimplementation are optional. For a necessary custom Processing check, reuse the [shared execution reference](../../integrations/qgis/execution.md).
-Carry already-discovered unmatched quantities, unreachable objects and consequential assumptions into delivery notes. Reuse existing statistics; no extra report or rerun is required.
+1. **Triage automatic spatial signals**: Check `outputs[].spatial` and `outputs[].anomalies` (`ZERO_FEATURES`, `MISSING_CRS`, `ALL_INVALID_OR_EMPTY`, `ALL_NODATA_RASTER`, `CONSTANT_RASTER_SURFACE`, `UNSCALED_HIGH_DN`, `CORRUPT_OR_UNREADABLE`). Never hide fatal errors; repair defects, or confirm expected limitations with `acknowledged_anomalies`.
+2. **Choose the smallest extrinsic oracle (never re-read code alone)**:
+   - **Conservation & key coverage**: [allocation_balance.py](scripts/allocation_balance.py) and [identity_audit.py](scripts/identity_audit.py).
+   - **Metamorphic & boundary properties**: [metamorphic_checks.py](scripts/metamorphic_checks.py) (`check_conservation`, `check_permutation_invariance`, `compare_boundary_predicates`, `check_scale_invariance`).
+   - **Geometry & numerical precision**: [geometry_facts.py](scripts/geometry_facts.py) and [precision_example.py](scripts/precision_example.py).
+   - **Held-out split leakage**: [validation_split.py](scripts/validation_split.py).
+   - **Domain counterexamples**: parallel-edge routing in [parallel_edges.py](../gis-vector-and-network/scripts/parallel_edges.py) and [network-access](../gis-vector-and-network/references/network-access.md); terrain/NoData/cache in [terrain-hydrology](../gis-terrain-and-hydrology/references/terrain-hydrology.md).
+3. **Host inspection shortcuts**: Reuse `summarize_fields` (column stats, key nulls/duplicates, geometry checks) and `check_spatial_relation` (foreign-key predicate check) before writing custom audit scripts.
+4. **Prevent futile repair loops & honor knowledge limits**: When `stagnation_alert` fires or mandatory inputs/CRS/connections are missing, follow the abstention matrix instead of forcing brittle approximations:
+   - Missing user policy/weight choice -> `finish_task(status="needs_input", reason="business_decision"|"missing_input", question=...)`.
+   - Physically missing datasets or infeasible task -> immediate `finish_task(status="blocked", ...)` after read-only audit (no dummy writes required).
+   - Verified subset alongside unresolved limitations -> `finish_task(status="partial", artifacts=[...], unresolved=[...])`.
+
+## References
+
+- Anomaly triage table, metamorphic check guide, and abstention matrix: [metamorphic & abstention](references/metamorphic-and-abstention.md).
+- Detailed claim-specific audit recipes, allocation patterns, precision, and Processing boilerplate: [checks](references/checks.md) and [QGIS execution guide](../../integrations/qgis/execution.md).

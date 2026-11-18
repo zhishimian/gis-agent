@@ -663,6 +663,7 @@ def test_new_v902_skill_scripts_offline(tmp_path: Path) -> None:
         ("gis-raster-and-imagery", "raster_align_index.py"),
         ("gis-terrain-and-hydrology", "hydrology_routing.py"),
         ("gis-spatial-statistics", "spatial_stats_examples.py"),
+        ("gis-verification", "metamorphic_checks.py"),
     ]
     results = {}
     for skill, name in scripts:
@@ -677,3 +678,8 @@ def test_new_v902_skill_scripts_offline(tmp_path: Path) -> None:
     assert results["hydrology_routing.py"]["flood"]["connected_volume_m3"] == 850.0
     stats = results["spatial_stats_examples.py"]
     assert abs(stats["moran_i_tier_a"] - stats["moran_i_tier_b"]) < 1e-5
+    meta = results["metamorphic_checks.py"]
+    assert meta["conservation_ok"]["within_tolerance"] and not meta["conservation_leak"]["within_tolerance"]
+    assert meta["permutation_good_invariant"] and not meta["permutation_pos_bug_invariant"]
+    assert meta["boundary"]["boundary_only_keys"] == ["edge"]
+    assert meta["ndvi_scale_invariant"] and not meta["savi_scale_invariant"]

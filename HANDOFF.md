@@ -313,3 +313,18 @@ GABench原工作区有大量修改，保留原状。50个LFS指针的对象已�
 3. **测试集收口与快慢分层**：
    - 将原零散版本测试文件合并收敛为 4 个域模块（`test_core_loop.py`、`test_runtime_and_tools.py`、`test_skills_and_cartography.py`、`test_adapters.py`）配合`benchmarks/geoagentbench/test_runner.py`（共 127 项：126 离线 + 1 live）。在`pyproject.toml`与`tests/conftest.py`注册`slow`/`live`标记。
    - 本机`.venv`验证：快速层`-m "not slow and not live"`通过 **81 passed, 46 deselected**（`27.05s`）；`tests/`全部 4 个域模块共 115 项（含全部真实 QGIS 集成测试）与新增 V9.0.2 单测/Skill 示例全数通过；`benchmarks/geoagentbench/test_runner.py`单独重跑 10 项全数通过（`6.86s`，此前全量并跑时第 162 行曾偶发一次 Windows `worker.lock` 并发写锁竞争`PermissionError`）。
+
+## V9.0.3 分层异常信号、非对称门控、防停滞与 `gis-verification` 升级
+
+2026-11-18（续）：结合 CCF-A 顶会研究（*CRITIC* ICLR'24、*AgentAbstain* NeurIPS'26 Oral、*Coding Agents Don't Know When to Act* ETH SRI、*HALLMARK* / 验证器误报研究、*RepairAgent* ICSE、*GeMTest/Testora* 蜕变测试）与 Codex 审核意见完成开发，设计文档见`docs/v9.0.3-verification-and-abstention-design.md`（`gis-cartography`留待 V9.0.4 专题改动；0 收费模型调用）：
+1. **分层异常信号器（不把症状当通用失败判定）**：
+   - `gis_agent/runtime/inspect_fast.py`新增`detect_spatial_anomalies(spatial)`，在`attach_spatial_vitals`与`run_qgis_algorithm`挂载三级客观信号：`L1 notice`（`UNSCALED_HIGH_DN`、`PARTIAL_INVALID_GEOMETRY`）、`L2 warning`（`ZERO_FEATURES`、`MISSING_CRS`、`ALL_INVALID_OR_EMPTY`、`ALL_NODATA_RASTER`、`CONSTANT_RASTER_SURFACE`）与`L3 fatal`（`CORRUPT_OR_UNREADABLE`）；健康产物零额外 token。
+2. **Confirm-Once 非对称终结门控与防停滞循环监测**：
+   - `gis_agent/tools/planning.py`为`finish_task`新增可选参数`acknowledged_anomalies`与`evidence`；`gis_agent/agent.py`的`accept_finish`对`completed`仅硬拦截致命损坏（`fatal`）及最近失败未重跑产物，对未核实 L2 告警温和打回提醒一次，经模型修复、独立读回核查或传`acknowledged_anomalies`确认后立即放行，彻底消除对合法空筛选/局部网格的误杀；对`blocked`/`needs_input`允许首轮只读探查后零写入直接诚实上报。
+   - `agent.py`新增无检查点Schema变更的即时防停滞统计`_stagnation_alert`，通过动态尾部`business["stagnation_alert"]`在连续同类失败 >= 2 次注入`warn`、>= 5 次注入`escalate`止损提示（成功执行即清除），并同步更新`gis_agent/prompts/system.j2`。
+3. **`gis-verification` Skill 与蜕变不变量取证升级**：
+   - 保留原有 5 个验证脚本与`checks.md`锚点，升级`SKILL.md`并新增`references/metamorphic-and-abstention.md`与双环境脚本`scripts/metamorphic_checks.py`（守恒残差、行序置换不变性、尺度缩放不变性、`intersects`/`within`/`covered_by`边界差集对照），已在 `.venv`（Tier B）与 `E:\exe\qgis`（Tier A）实测同值通过。
+4. **离线回归验证（`.venv` + 桌面 QGIS）**：
+   - `tests/`快速分层`-m "not slow and not live"`：**74 passed, 46 deselected**（`24.91s`）。
+   - `tests/`全量离线`-k "not live"`：**119 passed, 1 deselected**（`170.32s`，含全部桌面 QGIS 集成与新增 V9.0.3 机制/Skill 单测）。
+   - `benchmarks/geoagentbench/test_runner.py`：**10 passed**（`6.70s`，此前串联跑时第 162 行曾偶发一次既有 Windows `worker.lock` 竞争 `PermissionError`）。

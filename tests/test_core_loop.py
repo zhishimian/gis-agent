@@ -987,3 +987,156 @@ def test_runtime_capabilities_injected_in_dynamic_business_tail_preserving_prefi
     assert "tier_b_available" in seen_requests[0][-1]["content"]
     # 第2轮的前 N-1 条系统+用户+助手历史严格等于第1轮前缀（去掉旧末尾 business 后的所有稳定前缀消息）。
     assert seen_requests[1][: len(seen_requests[0]) - 1] == seen_requests[0][:-1]
+
+
+def test_asymmetric_finish_gate_acknowledge_once_and_honest_abstention(tmp_path: Path) -> None:
+    """非对称门控：L2 异常提示一次后经 acknowledged_anomalies 放行；fatal 硬拦截；只读查证后允许零写入 blocked。"""
+    import importlib.util
+
+    if importlib.util.find_spec("geopandas") is None:
+        pytest.skip("当前解释器未安装 geopandas。")
+
+    empty_gpkg = tmp_path / "filtered_empty.gpkg"
+    corrupt_tif = tmp_path / "corrupt.tif"
+    corrupt_tif.write_bytes(b"corrupt_raster_bytes")
+
+    # 构造带 ZERO_FEATURES 告警的工具，验证首次 completed 被温和拦截，传入 acknowledged_anomalies 后一次放行。
+    def make_empty_vec() -> dict[str, Any]:
+        import geopandas as gpd
+
+        gpd.GeoDataFrame({"id": pd.Series(dtype="int64")}, geometry=gpd.GeoSeries([], crs="EPSG:32650")).to_file(empty_gpkg)
+        return {
+            "ok": True,
+            "outputs": [
+                {
+                    "path": str(empty_gpkg),
+                    "exists": True,
+                    "empty": False,
+                    "spatial": {"kind": "vector", "crs": "EPSG:32650", "feature_count": 0, "invalid_sample_count": 0, "empty_sample_count": 0},
+                    "anomalies": [{"level": "warning", "code": "ZERO_FEATURES", "message": "要素数为0"}],
+                }
+            ],
+        }
+
+    import pandas as pd
+
+    plan = Plan()
+    tools1 = [*make_planning_tools(plan), Tool("make_vec", "生成要素", {"type": "object"}, make_empty_vec)]
+    reg1 = ToolRegistry()
+    for t in tools1:
+        reg1.register(t)
+    store1 = SessionStore(tmp_path / "s1", "ack_gate")
+    counter = make_token_counter(ModelConfig())
+    replies1 = iter([
+        reply("t1", "make_vec", {}),
+        reply("f1", "finish_task", {"status": "completed", "summary": "已完成筛选", "artifacts": [str(empty_gpkg)]}),
+        reply(
+            "f2",
+            "finish_task",
+            {
+                "status": "completed",
+                "summary": "经核实该空间过滤条件确无命中要素，属正常空结果。",
+                "artifacts": [str(empty_gpkg)],
+                "acknowledged_anomalies": ["ZERO_FEATURES"],
+                "evidence": ["filter_matched=0"],
+            },
+        ),
+    ])
+    agent1 = Agent(reg1, tools1, unexpected_model_call, plan, "测试", lambda *_: next(replies1), store1, make_context(store1, ContextConfig(), {t.name for t in tools1}, counter))
+    out1 = agent1.run([{"role": "user", "origin": "user", "content": "筛选满足条件的点。"}])
+    assert out1["status"] == "completed"
+    saved1 = store1.load()
+    finishes = [json.loads(m["content"]) for m in saved1 if m.get("tool_name") == "finish_task"]
+    assert not finishes[0]["ok"] and finishes[0]["anomalies"][0]["code"] == "ZERO_FEATURES"
+    assert finishes[1]["ok"] and finishes[1]["acknowledged_anomalies"] == ["ZERO_FEATURES"]
+
+    # fatal 异常即使传 acknowledged_anomalies=["ALL"] 也禁止 completed，逼迫转 partial/blocked。
+    def make_corrupt() -> dict[str, Any]:
+        return {
+            "ok": True,
+            "outputs": [
+                {
+                    "path": str(corrupt_tif),
+                    "exists": True,
+                    "empty": False,
+                    "spatial": {"kind": "corrupt", "error": "bad header"},
+                    "anomalies": [{"level": "fatal", "code": "CORRUPT_OR_UNREADABLE", "message": "头损坏"}],
+                }
+            ],
+        }
+
+    plan2 = Plan()
+    tools2 = [*make_planning_tools(plan2), Tool("make_bad", "生成坏文件", {"type": "object"}, make_corrupt)]
+    reg2 = ToolRegistry()
+    for t in tools2:
+        reg2.register(t)
+    store2 = SessionStore(tmp_path / "s2", "fatal_gate")
+    replies2 = iter([
+        reply("t1", "make_bad", {}),
+        reply("f1", "finish_task", {"status": "completed", "summary": "强行交付", "artifacts": [str(corrupt_tif)], "acknowledged_anomalies": ["ALL"]}),
+        reply("f2", "finish_task", {"status": "blocked", "summary": "输出文件损坏无法读取，已停止交付。", "reason": "data_quality"}),
+    ])
+    agent2 = Agent(reg2, tools2, unexpected_model_call, plan2, "测试", lambda *_: next(replies2), store2, make_context(store2, ContextConfig(), {t.name for t in tools2}, counter))
+    out2 = agent2.run([{"role": "user", "origin": "user", "content": "生成栅格。"}])
+    assert out2["status"] == "blocked"
+
+    # 零阻力诚实拒答：首轮只做只读探查、未建计划也未写脚本，直接 blocked 成功放行。
+    plan3 = Plan()
+    inspect_stub = Tool("inspect_data", "读取元数据", {"type": "object"}, lambda source="": {"ok": True, "data": {"layers": ["country_only"]}})
+    tools3 = [*make_planning_tools(plan3), inspect_stub]
+    reg3 = ToolRegistry()
+    for t in tools3:
+        reg3.register(t)
+    store3 = SessionStore(tmp_path / "s3", "fast_abstain")
+    replies3 = iter([
+        reply("i1", "inspect_data", {"source": "x.gpkg"}),
+        reply("b1", "finish_task", {"status": "blocked", "reason": "missing_input", "summary": "缺少地级市边界层与两期建成区数据，无法计算蔓延率。", "evidence": ["only_layer=country_only"]}),
+    ])
+    agent3 = Agent(reg3, tools3, unexpected_model_call, plan3, "测试", lambda *_: next(replies3), store3, make_context(store3, ContextConfig(), {t.name for t in tools3}, counter))
+    out3 = agent3.run([{"role": "user", "origin": "user", "content": "计算各城市蔓延率。"}])
+    assert out3["status"] == "blocked" and out3["reason"] == "missing_input"
+
+
+def test_stagnation_alert_warn_and_escalate_in_business_tail(tmp_path: Path) -> None:
+    """连续同类失败在动态 business 中注入 warn/escalate，恢复成功后自动清零且前缀保持稳定。"""
+    store = SessionStore(tmp_path, "stagnation")
+    counter = make_token_counter(ModelConfig())
+    plan = Plan()
+    fail_count = 0
+
+    def flaky_run(script_path: str = "calc.py") -> dict[str, Any]:
+        nonlocal fail_count
+        fail_count += 1
+        if fail_count <= 5:
+            return {"ok": False, "status": "failed", "stderr": "Traceback...\nCRSError: unknown EPSG"}
+        return {"ok": True, "status": "succeeded", "outputs": []}
+
+    tools = [*make_planning_tools(plan), Tool("run_python_script", "运行脚本", {"type": "object", "properties": {"script_path": {"type": "string"}}}, flaky_run)]
+    reg = ToolRegistry()
+    for t in tools:
+        reg.register(t)
+
+    seen_business: list[str] = []
+    replies = iter([
+        reply("r1", "run_python_script", {"script_path": "calc.py"}),
+        reply("r2", "run_python_script", {"script_path": "calc.py"}),
+        reply("r3", "run_python_script", {"script_path": "calc.py"}),
+        reply("r4", "run_python_script", {"script_path": "calc.py"}),
+        reply("r5", "run_python_script", {"script_path": "calc.py"}),
+        reply("r6", "run_python_script", {"script_path": "calc.py"}),
+        reply("ok", "finish_task", {"status": "completed", "summary": "修复坐标系后执行成功"}),
+    ])
+
+    def capture_chat(messages: list[dict[str, Any]], schemas: list[dict[str, Any]]) -> ModelReply:
+        seen_business.append(messages[-1]["content"])
+        return next(replies)
+
+    agent = Agent(reg, tools, unexpected_model_call, plan, "测试", capture_chat, store, make_context(store, ContextConfig(), {t.name for t in tools}, counter))
+    out = agent.run([{"role": "user", "origin": "user", "content": "运行计算。"}])
+    assert out["status"] == "completed"
+    # 前2轮正常及首败无告警；第2次失败后（第3次请求）出现 warn；第5次失败后（第6次请求）出现 escalate；第6次成功后（第7次请求）告警清除
+    assert "stagnation_alert" not in seen_business[0]
+    assert "stagnation_alert" not in seen_business[1]
+    assert '"level":"warn"' in seen_business[2]
+    assert '"level":"escalate"' in seen_business[5]
+    assert "stagnation_alert" not in seen_business[6]

@@ -234,6 +234,7 @@ def _extract_vital_summary(info: dict[str, Any]) -> dict[str, Any]:
             "band_count": len(bands),
             "dtype": b0.get("dtype"),
             "nodata": b0.get("nodata"),
+            "scale": b0.get("scale", 1.0),
             "valid_ratio": overview.get("valid_ratio"),
             "raw_min": overview.get("raw_min"),
             "raw_max": overview.get("raw_max"),
@@ -241,6 +242,82 @@ def _extract_vital_summary(info: dict[str, Any]) -> dict[str, Any]:
     if kind == "container":
         return {"kind": "container", "layer_count": len(info.get("layers") or [])}
     return {"kind": kind or "unknown"}
+
+
+def detect_spatial_anomalies(spatial: dict[str, Any]) -> list[dict[str, str]]:
+    """Classify objective spatial vital signs into notice / warning / fatal signals without business verdicts."""
+    kind = spatial.get("kind")
+    if kind == "corrupt" or spatial.get("error"):
+        return [{
+            "level": "fatal",
+            "code": "CORRUPT_OR_UNREADABLE",
+            "message": f"空间文件读取失败或文件头损坏：{spatial.get('error', '')}".rstrip("："),
+        }]
+
+    anomalies: list[dict[str, str]] = []
+    crs = (spatial.get("crs") or "").strip()
+    if kind == "vector":
+        fc = spatial.get("feature_count")
+        inv = int(spatial.get("invalid_sample_count") or 0)
+        emp = int(spatial.get("empty_sample_count") or 0)
+        if not crs:
+            anomalies.append({
+                "level": "warning",
+                "code": "MISSING_CRS",
+                "message": "输出矢量缺失坐标系（CRS 为空）。",
+            })
+        if fc == 0:
+            anomalies.append({
+                "level": "warning",
+                "code": "ZERO_FEATURES",
+                "message": "输出矢量要素数为 0；请核实是预期空集还是过滤/坐标系错配所致。",
+            })
+        elif isinstance(fc, int) and fc > 0 and (inv > 0 or emp > 0):
+            if inv + emp >= min(fc, 200):
+                anomalies.append({
+                    "level": "warning",
+                    "code": "ALL_INVALID_OR_EMPTY",
+                    "message": f"抽检几何全部为空或无效（empty={emp}, invalid={inv}）。",
+                })
+            else:
+                anomalies.append({
+                    "level": "notice",
+                    "code": "PARTIAL_INVALID_GEOMETRY",
+                    "message": f"前200要素抽检发现无效或空几何（invalid={inv}, empty={emp}）。",
+                })
+    elif kind == "raster":
+        vr = spatial.get("valid_ratio")
+        dtype = str(spatial.get("dtype") or "").lower()
+        rmin = spatial.get("raw_min")
+        rmax = spatial.get("raw_max")
+        shape = spatial.get("shape") or []
+        scale = spatial.get("scale")
+        pixels = (shape[0] or 0) * (shape[1] or 0) if len(shape) == 2 else 0
+        if not crs:
+            anomalies.append({
+                "level": "warning",
+                "code": "MISSING_CRS",
+                "message": "输出栅格缺失坐标系（CRS 为空）。",
+            })
+        if vr == 0.0:
+            anomalies.append({
+                "level": "warning",
+                "code": "ALL_NODATA_RASTER",
+                "message": "输出栅格概览有效像元占比为 0.0（全 NoData）。",
+            })
+        elif rmin is not None and rmax is not None and rmin == rmax and pixels > 1 and "float" in dtype:
+            anomalies.append({
+                "level": "warning",
+                "code": "CONSTANT_RASTER_SURFACE",
+                "message": f"浮点栅格概览像元全为常数值 {rmin}；请核实是否计算退化或符合平坦预期。",
+            })
+        if "int" in dtype and rmax is not None and rmax > 100 and (scale is None or scale == 1.0):
+            anomalies.append({
+                "level": "notice",
+                "code": "UNSCALED_HIGH_DN",
+                "message": f"整型栅格极值 {rmax} 且 scale=1.0；计算 SAVI/EVI 等含加性常数光谱指数时请核对定标。",
+            })
+    return anomalies
 
 
 def extract_vital_signs(source: str) -> dict[str, Any]:
@@ -273,13 +350,23 @@ def attach_spatial_vitals(
     if importlib.util.find_spec("pyogrio") is not None and importlib.util.find_spec("rasterio") is not None:
         for item, path_str in targets:
             try:
-                item["spatial"] = extract_vital_signs(path_str)
-            except Exception:
-                pass
+                summary = extract_vital_signs(path_str)
+            except ImportError:
+                summary = None
+            except Exception as err:
+                summary = {"kind": "corrupt", "error": str(err)[:240]}
+            if isinstance(summary, dict):
+                item["spatial"] = summary
+                anoms = detect_spatial_anomalies(summary)
+                if anoms:
+                    item["anomalies"] = anoms
         return outputs
 
     if launcher is not None and launcher.is_file():
         env = dict(os.environ)
+        if launcher.suffix.lower() not in {".bat", ".cmd"}:
+            for var in ("PROJ_LIB", "PROJ_DATA", "GDAL_DATA"):
+                env.pop(var, None)
         root = str(import_root())
         env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         try:
@@ -296,8 +383,12 @@ def attach_spatial_vitals(
                 if lines:
                     vitals = json.loads(lines[-1]).get("vitals") or {}
                     for item, path_str in targets:
-                        if isinstance(vitals.get(path_str), dict):
-                            item["spatial"] = vitals[path_str]
+                        summary = vitals.get(path_str)
+                        if isinstance(summary, dict):
+                            item["spatial"] = summary
+                            anoms = detect_spatial_anomalies(summary)
+                            if anoms:
+                                item["anomalies"] = anoms
         except Exception:
             pass
     return outputs
@@ -317,8 +408,8 @@ def main(argv: list[str]) -> dict[str, Any]:
         for source in argv[1:]:
             try:
                 vitals[source] = extract_vital_signs(source)
-            except Exception:
-                pass
+            except Exception as error:
+                vitals[source] = {"kind": "corrupt", "error": str(error)[:240]}
         return {"vitals": vitals}
     return inspect_single(argv[0])
 

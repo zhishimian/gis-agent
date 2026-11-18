@@ -1158,3 +1158,62 @@ Path(os.environ["GIS_AGENT_RESULT_PATH"]).write_text(json.dumps({{"vec": {str(ve
     assert ras_spatial["kind"] == "raster" and ras_spatial["crs"] == "EPSG:32650" and ras_spatial["shape"] == [2, 2]
     assert ras_spatial["nodata"] == -9999.0 and ras_spatial["valid_ratio"] == 0.75
     assert ras_spatial["raw_min"] == 10.0 and ras_spatial["raw_max"] == 30.0
+
+
+def test_stratified_spatial_anomaly_detection_and_corrupt_header(tmp_path: Path) -> None:
+    """空间异常分级检测：区分 L1 notice / L2 warning / L3 fatal，不误杀底层合法产出。"""
+    import importlib.util
+
+    from gis_agent.runtime.inspect_fast import attach_spatial_vitals, detect_spatial_anomalies
+
+    # 1) 纯结构异常分类校验（零依赖路径）
+    unscaled = detect_spatial_anomalies(
+        {"kind": "raster", "crs": "EPSG:32650", "shape": [10, 10], "dtype": "int16", "scale": 1.0, "valid_ratio": 1.0, "raw_min": 500.0, "raw_max": 4500.0}
+    )
+    assert [(a["level"], a["code"]) for a in unscaled] == [("notice", "UNSCALED_HIGH_DN")]
+
+    empty_vec = detect_spatial_anomalies({"kind": "vector", "crs": "", "feature_count": 0, "invalid_sample_count": 0, "empty_sample_count": 0})
+    assert {a["code"] for a in empty_vec} == {"MISSING_CRS", "ZERO_FEATURES"}
+    assert all(a["level"] == "warning" for a in empty_vec)
+
+    partial_bad = detect_spatial_anomalies({"kind": "vector", "crs": "EPSG:4326", "feature_count": 10, "invalid_sample_count": 2, "empty_sample_count": 0})
+    assert [(a["level"], a["code"]) for a in partial_bad] == [("notice", "PARTIAL_INVALID_GEOMETRY")]
+
+    all_bad = detect_spatial_anomalies({"kind": "vector", "crs": "EPSG:4326", "feature_count": 2, "invalid_sample_count": 2, "empty_sample_count": 0})
+    assert [(a["level"], a["code"]) for a in all_bad] == [("warning", "ALL_INVALID_OR_EMPTY")]
+
+    const_dem = detect_spatial_anomalies(
+        {"kind": "raster", "crs": "EPSG:32650", "shape": [5, 5], "dtype": "float32", "scale": 1.0, "valid_ratio": 1.0, "raw_min": 100.0, "raw_max": 100.0}
+    )
+    assert [(a["level"], a["code"]) for a in const_dem] == [("warning", "CONSTANT_RASTER_SURFACE")]
+
+    all_nodata = detect_spatial_anomalies(
+        {"kind": "raster", "crs": "EPSG:32650", "shape": [5, 5], "dtype": "float32", "scale": 1.0, "valid_ratio": 0.0, "raw_min": None, "raw_max": None}
+    )
+    assert [(a["level"], a["code"]) for a in all_nodata] == [("warning", "ALL_NODATA_RASTER")]
+
+    # 2) 真实文件头损坏触发 fatal CORRUPT_OR_UNREADABLE，而非静默吞异常
+    corrupt_tif = tmp_path / "broken.tif"
+    corrupt_tif.write_bytes(b"NOT_A_VALID_TIFF_HEADER_1234567890")
+    outputs = [{"path": str(corrupt_tif), "exists": True, "empty": False}]
+    attach_spatial_vitals(outputs, Path(sys.executable))
+    assert outputs[0]["spatial"]["kind"] == "corrupt"
+    assert outputs[0]["anomalies"][0]["level"] == "fatal"
+    assert outputs[0]["anomalies"][0]["code"] == "CORRUPT_OR_UNREADABLE"
+
+    if importlib.util.find_spec("rasterio") is not None and importlib.util.find_spec("numpy") is not None:
+        all_nan_tif = tmp_path / "empty_raster.tif"
+        script = tmp_path / "make_nan_tif.py"
+        script.write_text(
+            f'''import numpy as np, rasterio
+from rasterio.transform import from_origin
+arr = np.full((4, 4), -9999.0, dtype=np.float32)
+with rasterio.open({str(all_nan_tif)!r}, "w", driver="GTiff", height=4, width=4, count=1, dtype="float32", crs="EPSG:32650", transform=from_origin(0, 40, 10, 10), nodata=-9999.0) as dst:
+    dst.write(arr, 1)
+''',
+            encoding="utf-8",
+        )
+        run = run_python_script(Path(sys.executable), tmp_path / "logs", str(script))
+        assert run["ok"], run
+        ras_item = next(item for item in run["outputs"] if Path(item["path"]).name == "empty_raster.tif")
+        assert [a["code"] for a in ras_item["anomalies"]] == ["ALL_NODATA_RASTER"]
