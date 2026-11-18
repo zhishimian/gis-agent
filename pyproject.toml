@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gis-agent"
+version = "9.0.0"
+description = "Lightweight, verifiable GIS Coding Agent with multi-endpoint adapters"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "openai>=1.50",
+    "jinja2>=3.1",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+cli = [
+    "typer>=0.12",
+]
+vision = [
+    "pillow>=10.0",
+]
+geo = [
+    "pillow>=10.0",
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "pandas>=2.2",
+    "shapely>=2.0",
+    "pyproj>=3.6",
+    "pyogrio>=0.10",
+    "rasterio>=1.4",
+    "geopandas>=1.0",
+    "matplotlib>=3.9",
+    "mapclassify>=2.8",
+    "rasterstats>=0.20",
+    "networkx>=3.2",
+    "scikit-learn>=1.5",
+    "pykrige>=1.7",
+    "libpysal>=4.12",
+    "esda>=2.6",
+    "duckdb>=1.1",
+    "netCDF4>=1.7",
+]
+dev = [
+    "pytest>=8.0",
+    "pillow>=10.0",
+    "typer>=0.12",
+]
+
+[project.scripts]
+gis-agent = "gis_agent.adapters.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["gis_agent"]

@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.sqlite import SqliteSaver
 from openai import DefaultHttpxClient, OpenAI
 
 from gis_agent.agent import Agent
@@ -23,6 +21,7 @@ from gis_agent.core.planning import Plan
 from gis_agent.integrations.llm import chat, make_token_counter
 from gis_agent.integrations.qgis.catalog import load_catalog, make_search_tool
 from gis_agent.integrations.qgis.client import QGISClient
+from gis_agent.persistence.checkpoints import SqliteCheckpointer
 from gis_agent.persistence.executions import ExecutionHistory
 from gis_agent.persistence.interaction import latest_outcome
 from gis_agent.persistence.json import json_text
@@ -188,7 +187,7 @@ class AgentFactory:
         store: SessionStore,
         messages: list[dict[str, Any]],
         output_dir: Path,
-        saver: BaseCheckpointSaver,
+        saver: Any,
         instructions: str,
         *,
         extra_tools: list[Tool] | None = None,
@@ -275,7 +274,7 @@ def open_conversation(config: AppConfig, session_id: str) -> Iterator[Conversati
             max_retries=config.max_retries,
             http_client=DefaultHttpxClient(trust_env=config.trust_env),
         ) as client,
-        SqliteSaver.from_conn_string(str(config.session_root / "checkpoints.sqlite")) as saver,
+        SqliteCheckpointer.from_conn_string(str(config.session_root / "checkpoints.sqlite")) as saver,
     ):
         factory = AgentFactory(config, partial(chat, client, config.model), make_token_counter(config.model), qgis, catalog)
         memory = MemoryStore(config.memory) if config.memory is not None else None

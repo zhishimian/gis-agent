@@ -6,17 +6,15 @@ import logging
 from time import perf_counter
 from typing import Any, TypedDict
 
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, StateGraph
-
 from gis_agent.core.auxiliary import AuxiliaryError
 from gis_agent.core.context import ContextLimit, ContextManager
 from gis_agent.core.events import EventCallback, emit_event
+from gis_agent.core.loop import AgentLoopRunner
 from gis_agent.core.memory import MemoryStore, MemoryTurn, extract_memories
 from gis_agent.core.model import ModelReply
 from gis_agent.core.planning import Plan
 from gis_agent.persistence.executions import ExecutionHistory, execution_id, record_history
+from gis_agent.persistence.json import json_text
 from gis_agent.persistence.sessions import SessionStore, message_units
 from gis_agent.prompts import render_prompt
 from gis_agent.tools.base import Tool
@@ -61,27 +59,16 @@ class Agent:
     context: ContextManager
     memory: MemoryStore | None = None
     memory_turn: MemoryTurn | None = None
-    checkpointer: BaseCheckpointSaver | None = None
+    checkpointer: Any = None
     history: ExecutionHistory | None = None
     on_event: EventCallback | None = None
-    graph: Any = field(init=False, repr=False)
+    graph: AgentLoopRunner = field(init=False, repr=False)
     messages: list[dict[str, Any]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.memory is not None and self.memory_turn is None:
             raise ValueError("启用记忆时必须提供 MemoryTurn。")
-        builder = StateGraph(RunState)
-        builder.add_node("model", self.model)
-        builder.add_node("tools", self.tools)
-        builder.add_node("finish", self.finish)
-        builder.add_edge(START, "model")
-        builder.add_conditional_edges("model", self.route, {"continue": "tools", "finish": "finish"})
-        builder.add_conditional_edges("tools", self.route, {"continue": "model", "finish": "finish"})
-        builder.add_edge("finish", END)
-        self.graph = builder.compile(
-            checkpointer=self.checkpointer if self.checkpointer is not None else InMemorySaver(),
-            interrupt_after=["tools"],
-        )
+        self.graph = AgentLoopRunner(self.model, self.tools, self.finish, self.checkpointer)
 
     def options(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.store.session_id}, "recursion_limit": 16}
@@ -95,6 +82,34 @@ class Agent:
                 "Session 已领先于检查点或被外部修改，不能自动重放。"
                 "请检查已有产物和执行标记；必要时新建会话并提供已有成果路径。"
             )
+
+    def _reconcile_completed_batch(self, snapshot: Any) -> bool:
+        """若工具批次已在 Session 全部标记 finished 并通过完整性检查，而 SQLite 尚未推进，安全向前对齐。"""
+        if snapshot.next != ("tools",):
+            return False
+        try:
+            records = self.store.read_record()
+            message_units(records)
+        except (OSError, ValueError):
+            return False
+        idx = snapshot.values.get("model_index")
+        if not isinstance(idx, int) or idx >= len(records):
+            return False
+        assistant_msg = records[idx]
+        calls = assistant_msg.get("tool_calls") or []
+        executions = assistant_msg.get("executions") or {}
+        if not calls or any(executions.get(c["id"]) != "finished" for c in calls):
+            return False
+        # 验证前缀与 model 阶段记录一致（剔除后来写入的 executions 字段）
+        prefix = [*records[:idx], {k: v for k, v in assistant_msg.items() if k != "executions"}]
+        if hashlib.sha256(json_text(prefix).encode("utf-8")).hexdigest() != snapshot.values.get("record_hash"):
+            return False
+        self.graph.update_state(
+            self.options(),
+            {"model_index": len(records), "record_hash": self.record_hash()},
+            as_node="tools",
+        )
+        return True
 
     def recall(self, start: int) -> str:
         if self.memory is None:
@@ -140,7 +155,10 @@ class Agent:
             raise ValueError("没有待续跑的检查点。")
         if snapshot.values.get("version") not in {790, 810, 900}:
             raise ValueError("检查点来自旧版执行流程，请保留原记录，新建会话并提供已有成果路径。")
-        self.verify_record(snapshot.values)
+        if self.record_hash() != snapshot.values["record_hash"]:
+            if not self._reconcile_completed_batch(snapshot):
+                self.verify_record(snapshot.values)
+            snapshot = self.graph.get_state(self.options())
         messages[:] = self.store.read_record()
         self.messages = messages
         restored = Plan.from_messages(messages)
@@ -154,7 +172,7 @@ class Agent:
 
     def drive(self, state: RunState | None) -> dict[str, Any]:
         while True:
-            self.graph.invoke(state, self.options(), durability="sync")
+            self.graph.invoke(state, self.options())
             snapshot = self.graph.get_state(self.options())
             if not snapshot.next:
                 return snapshot.values["outcome"]
@@ -341,6 +359,3 @@ class Agent:
             self.store.record_model_call({"purpose": "memory_maintenance", **maintenance})
         emit_event(self.on_event, "turn_finished", self.store.session_id, status=outcome.get("status"))
         return {"outcome": outcome, "record_hash": self.record_hash(), "model_index": len(self.messages)}
-
-    def route(self, state: RunState) -> str:
-        return "finish" if state["outcome"] is not None else "continue"

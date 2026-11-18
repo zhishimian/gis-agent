@@ -59,7 +59,7 @@ def configured_model() -> ModelConfig:
         context_window=int(window),
         tokenizer=os.environ.get(
             "GIS_AGENT_TOKENIZER",
-            "bytes",
+            "deepseek-ai/DeepSeek-V4.1-Flash-1017" if deepseek else "bytes",
         ),
         provider=provider,
         output_parameter=os.environ.get(

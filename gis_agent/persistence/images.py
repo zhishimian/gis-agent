@@ -3,8 +3,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
-
 
 IMAGE_FORMATS = {
     "PNG": ("image/png", ".png"),
@@ -19,6 +17,8 @@ MAX_IMAGE_PIXELS = 16_000_000
 def save_image(
     path: str, directory: Path, crop: list[int] | None = None,
 ) -> dict[str, Any]:
+    from PIL import Image
+
     source = Path(path).expanduser().resolve()
     if not source.is_file():
         return {"ok": False, "error": f"图片不存在：{source}"}

@@ -1,9 +1,9 @@
 import base64
 import hashlib
+import re
 from typing import Any
 
 from openai import APIError, OpenAI
-from tokenizers import Tokenizer
 
 from gis_agent.core.model import ModelConfig, ModelError, ModelReply, TokenCounter
 from gis_agent.persistence.images import load_image
@@ -43,15 +43,29 @@ def request_view(
     return view, len(pictures)
 
 
-def make_token_counter(config: ModelConfig) -> TokenCounter:
-    tokenizer = None if config.tokenizer == "bytes" else Tokenizer.from_pretrained(config.tokenizer)
+_TOKEN_RE = re.compile(
+    r"([A-Za-z0-9_])\1{3,11}"
+    r"|[A-Za-z_]{1,6}"
+    r"|[0-9]{1,4}"
+    r"|[\u4e00-\u9fff]{1,2}"
+    r"|\s+"
+    r"|[^\w\s\u4e00-\u9fff]{1,2}"
+    r"|."
+)
 
+
+def estimate_text_tokens(text: str) -> int:
+    return sum(1 for _ in _TOKEN_RE.finditer(text)) + 1
+
+
+def make_token_counter(config: ModelConfig) -> TokenCounter:
     def count(messages: list[dict[str, Any]], schemas: list[dict[str, Any]]) -> int:
         view, image_count = request_view(messages, config)
         text = json_text({"messages": view, "tools": schemas})
         text_tokens = (
-            len(text.encode("utf-8")) if tokenizer is None
-            else len(tokenizer.encode(text, add_special_tokens=False).ids)
+            len(text.encode("utf-8"))
+            if config.tokenizer == "bytes"
+            else estimate_text_tokens(text)
         )
         return text_tokens + 8 * len(view) + 256 + image_count * config.image_tokens
 
