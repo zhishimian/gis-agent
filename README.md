@@ -1,16 +1,29 @@
-# GIS-Agent V8.4
+# GIS-Agent V9.0
 
-单 Agent GIS 助手。LangGraph 管理模型与工具往返。QGIS Processing 和独立 QGIS Python 执行空间计算。Matplotlib、GeoPandas、Rasterio 负责静态制图。
+单 Agent GIS 助手。纯 Python 状态机（`AgentLoopRunner`）与标准库 SQLite 检查点（`SqliteCheckpointer`）管理模型与工具往返，核心运行时零 `langgraph` / `tokenizers` 依赖。支持独立 Python（`uv` 锁定环境）与 QGIS Processing / PyQGIS 双后端执行空间计算，Matplotlib、GeoPandas、Rasterio 负责静态制图。
 
-## 使用
+## 环境与三端入口
 
-Agent 环境依赖见 [environment.yml](environment.yml)。GIS 库安装在独立的 QGIS Python 环境。制图库版本见 [requirements.txt](gis_agent/integrations/plotting/requirements.txt)。运行前核对实际包位置；Conda 和 QGIS Python 的依赖独立管理。
+项目依赖由 [pyproject.toml](pyproject.toml) 与 [uv.lock](uv.lock) 分组声明，同时兼容历史 Conda 环境 [environment.yml](environment.yml)：
 
-在本机 `.env` 中配置 `DEEPSEEK_API_KEY` 和 `GIS_AGENT_QGIS_DIR`。该文件不提交。也可用环境变量配置供应商、模型和执行路径。入口为：
+```powershell
+# 最小核心 + CLI + 测试环境
+uv sync --extra cli --extra dev
+
+# 独立全功能地理计算环境（无需预装桌面 QGIS）
+uv sync --extra cli --extra vision --extra geo
+```
+
+在本机 `.env` 中配置 `DEEPSEEK_API_KEY`；若需调用 `qgis:*` / `native:*` / `gdal:*` 算法，配置 `GIS_AGENT_QGIS_DIR`（未配置时自动降级为纯 Python 独立模式）。入口为：
 
 ```powershell
 python main.py
 ```
+
+三端适配层位于 `gis_agent/adapters/`：
+- `cli.py`：终端交互与离线会话查询入口。
+- `harness_mcp.py`：面向外部通用 Coding Agent（Claude Code / Codex / Cursor）暴露的精简静态 GIS 工具集。
+- `stubs.py`：QGIS 插件端（`QgsTask` + 停靠面板）与独立桌面端事件流骨架。
 
 记录保存在 `sessions/`，成果保存在 `outputs/`。输入数据保持原样。三个 Skills 按需读取：
 
@@ -18,9 +31,12 @@ python main.py
 - [专业核查](gis_agent/skills/gis-verification/SKILL.md)：针对实际主张取得必要证据。
 - [专题制图](gis_agent/skills/gis-cartography/SKILL.md)：自由 Python 制图和图像回看。
 
-复杂任务可参考空间分析 Skill 内的阶段化 Python、I/O 和路网示例。昂贵计算可保存中间成果，再单独完成后段和格式导出。普通小修改仍可直接编辑执行。
+## 静态工具协议与快速探针
 
-`execution_history` 按需查当前 Session 的真实参数、脚本快照、结果和错误。`local_replay` 为依赖明确的局部修订保留版本和复用成果；它不恢复 Python 内存，也不自动推断隐藏依赖。Fisher-Jenks 示例需要在实际 QGIS Python 中安装固定的 jenkspy 版本，见上述制图依赖清单。
+- **静态 Schema（KV Cache 友好）**：检索 `search_qgis_tools` 返回算法参数契约，执行统一走 `run_qgis_algorithm(algorithm_id, parameters, project_path)`，运行时动态校验必填键与未知参数，不再向请求注入动态工具列表。
+- **头信息与概览抽样探针**：`inspect_data` 优先通过 `pyogrio` / `rasterio` 毫秒级读取矢量图层目录、CRS 单位、栅格波段 `dtype` / `colorinterp` / `nodata` / `scale` / `offset` 与 `256×256` 概览值域，必要时回退 PyQGIS。
+- **执行器安全回执**：子进程超时整树回收（`taskkill /F /T`）、首尾双向保留错误堆栈、递归扫描子目录新增产物、写入目录边界拦截、`finish_task` 零字节产物拦截，以及 JSON 原子替换 Windows 瞬时句柄重试。
+- `execution_history` 按需查当前 Session 的真实参数、脚本快照、结果和错误。历史 0 调用的 V8.1 `local_replay` 模块已归档至 `archive/v8_replay/`。
 
 ## 等待用户与继续
 
@@ -31,18 +47,16 @@ python main.py --session my-task chat
 python main.py --session my-task waiting
 ```
 
-`waiting` 只读查看已有问题，无需模型 Key 或启动 QGIS。完成状态包括 `completed`、`partial`、`needs_input`、`blocked`、`cancelled`；`answer` 用于普通问答。部分完成会列出未完成要求。能力边界及证据见 [V8.4 实施报告](docs/v8.4-implementation-report.md)。
+`waiting` 只读查看已有问题，无需模型 Key 或启动 QGIS。完成状态包括 `completed`、`partial`、`needs_input`、`blocked`、`cancelled`；`answer` 用于普通问答。
 
 ## 输出预算与验证
 
-DeepSeek 默认 `max_tokens=393216`。配置入口为 `GIS_AGENT_MAX_OUTPUT_TOKENS`。输入预算同时为输出和协议留出空间。其他供应商的上限需按实际模型显式配置。上限只限制最大生成量；费用按实际用量计算。
-
-截断响应原件保留在 Session。其整批工具调用均拒绝执行。达到模型上限仍会明确停止。V7 收官只完成免费离线验证；提高预算后的真实任务表现尚未测量。
+DeepSeek 默认 `max_tokens=393216`。配置入口为 `GIS_AGENT_MAX_OUTPUT_TOKENS`。输入预算同时为输出和协议留出空间。截断响应原件保留在 Session，其整批工具调用均拒绝执行。
 
 ```powershell
 python -B -m pytest tests -k "not live" -v -p no:cacheprovider
 ```
 
-本地离线运行需已有 tokenizer 缓存和可用 QGIS。设置 `HF_HUB_OFFLINE=1` 可禁止 tokenizer 下载。带 `live` 的测试会连接真实模型，需单独授权运行。
+本地离线测试无需 HuggingFace `tokenizers` 缓存；若配置 `GIS_AGENT_QGIS_DIR` 则运行全部真实 QGIS 集成测试。带 `live` 的测试会连接真实模型，需单独授权运行。
 
-当前交付与证据见 [V8.4 实施报告](docs/v8.4-implementation-report.md)。专业资产及历史/重放背景见 [V8.3 实施报告](docs/v8.3-implementation-report.md)。开发交接见 [HANDOFF](HANDOFF.md)。
+重构设计见 [V9.0 重构设计](docs/v9.0-refactoring-design.md)，总体蓝图见 [V9 总体改造方针与落地蓝图](V9_总体改造方针与落地蓝图.md)，行业调研见 [主流 GIS Agent 与制图方案深度调研报告](主流GIS_Agent与制图方案深度调研报告.md)，开发交接见 [HANDOFF](HANDOFF.md)。

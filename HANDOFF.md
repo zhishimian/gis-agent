@@ -270,3 +270,14 @@ GABench原工作区有大量修改，保留原状。50个LFS指针的对象已�
 重要实验限制：Python隔离器曾禁止枚举项目父目录，真实脚本cwd下FileFinder无法导入gis_agent。日志有70次相关失败返回、涉及39题。全部收费结束后才通过小型复现确认并修正测试器；原成果保留且未收费重跑。测试必须从真实脚本目录验证项目助手导入，同时核对参考读取和网络仍被拒绝。下一轮要先统一修正后的测试器再解释V1增益，不能把消除隔离错误的收益归为产品改进。
 
 原CHECK也需独立审查：42题官方true与线段穿建筑三角面的事实冲突；53题隐藏文件名条件不在题面；38题参考用全局OLS替代GWR。33题规定输入distances.pkl已含旅行时间，属于题库自身的信息泄漏风险。reviews.json保留逐题证据，不能将原CHECK、文件存在或工具步骤一致直接作为专业正确率。当前5项待定需方法或业务语义复核；本轮没有实施V1或第二轮模型实验。
+
+
+## V9.0 环境解耦、三端骨架与执行协议重构
+
+2026-11-18：设计文档为`docs/v9.0-refactoring-design.md`，总体蓝图为`V9_总体改造方针与落地蓝图.md`，行业调研为`主流GIS_Agent与制图方案深度调研报告.md`。重构分支为`feature/v9`（基于`d541c8a`切出），`main`与`feature/geoagentbench-v0`原样保留。按约定本轮仅落地Slice 1～3基础架构工程，不修改制图子系统与`gis-cartography` Skill，不构建重型前端，不调用收费模型API。
+
+- **Slice 1（静态工具协议与执行器安全回执）**：将2601轮实测0调用的V8.1 `local_replay`及配套模块归档至`archive/v8_replay/`。取消动态`qgis_*`工具Schema注入，统一收敛为`search_qgis_tools`检索参数说明 + `run_qgis_algorithm(algorithm_id, parameters, project_path)`静态执行工具，运行时由算法目录动态校验必填项、未知键并附带FID重建等风险提示，保持请求前缀稳定以保护KV Cache。`persistence/json.py`的原子替换新增Windows瞬时`PermissionError`指数退避重试；`runtime/runner.py`新增进程树超时回收（`taskkill /F /T`）、首尾双向保留（前1500字符+后3500字符）错误日志截断及输出目录递归`os.walk`新增文件发现；文件写入工具增加受控工作根边界校验；`finish_task`增加0字节空文件拦截。
+- **Slice 2（快速数据头与概览抽样探针）**：新增`gis_agent/runtime/inspect_fast.py`与`probe.py`，`inspect_data`优先经`pyogrio`与`rasterio`直接读取矢量图层目录、要素计数、CRS单位、前200要素几何有效性抽样，以及栅格波段`dtype`、`colorinterp`、`nodata`、`scale`、`offset`、`unit`和`256×256`降采样概览值域，未命中快速路径时回退PyQGIS。
+- **Slice 3（`uv`环境管理、纯Python状态循环与三端适配骨架）**：新增`pyproject.toml`与`uv.lock`，按最小核心、`cli`、`vision`、`geo`、`dev`分组声明依赖。新增`gis_agent/core/loop.py`（`AgentLoopRunner`）与`gis_agent/persistence/checkpoints.py`（`SqliteCheckpointer`），移除`gis_agent/`内全部`langgraph`与`tokenizers`硬依赖及`Pillow`顶层硬导入，支持带窄窗口核对的断点对齐（仅当Session末尾工具批次消息完整闭合且旧前缀一致时对齐检查点，不自动重放未闭合副作用工具）。`GIS_AGENT_QGIS_DIR`改为可选配置；新增`gis_agent/adapters/{cli.py, harness_mcp.py, stubs.py}`三端入口骨架。
+
+本地离线全量回归通过（`tests/`与`benchmarks/geoagentbench/test_runner.py`），收费`live`项排除，实际收费API调用为0。Slice 4小样本线上消融实验待后续按需授权启动。
