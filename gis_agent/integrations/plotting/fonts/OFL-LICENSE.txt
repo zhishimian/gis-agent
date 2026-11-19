@@ -1,0 +1,16 @@
+SIL Open Font License 1.1 Bundled Typography Attribution
+===========================================================
+
+OpenGIS-Agent bundles the following open-source fonts under the SIL Open Font License (OFL) Version 1.1:
+
+1. Source Serif 4 (v4.005R)
+   - Upstream: https://github.com/adobe-fonts/source-serif
+   - Copyright: Adobe (https://github.com/adobe-fonts/source-serif)
+   - License: SIL Open Font License 1.1
+
+2. LXGW WenKai Lite (v1.530)
+   - Upstream: https://github.com/lxgw/LxgwWenKai-Lite
+   - Copyright: LXGW (https://github.com/lxgw)
+   - License: SIL Open Font License 1.1
+
+These fonts remain licensed under SIL OFL 1.1. See each upstream repository for complete copyright headers and license texts.

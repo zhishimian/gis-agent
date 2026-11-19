@@ -1,20 +1,29 @@
+# Secrets & local environment
 .env
 .env.*
-sessions/
+/.venv/
+/.memory/
+/sessions/
+/outputs/
+/data/
+
+# Internal design drafts, scratch archives & local benchmark datasets
+/docs/
+/archive/
+/timu暂存/
+/v7.6-research/
+/HANDOFF.md
+/V9_总体改造方针与落地蓝图.md
+/主流GIS_Agent与制图方案深度调研报告.md
+
+# Caches, IDE & temporary artifacts
 __pycache__/
-
-.vscode
-
-.history
-
-outputs/
-
-data/
-
-docs/
-
-.memory/
-v7.6-research/
-.pytest_cache/
-.venv/
-timu暂存/
+*.py[cod]
+*$py.class
+/.pytest_cache/
+/.history/
+/.vscode/
+*.sqlite
+*.sqlite-*
+*.log
+*.tmp

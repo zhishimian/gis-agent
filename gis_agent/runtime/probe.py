@@ -30,12 +30,19 @@ CANDIDATE_PACKAGES = (
     "esda",
     "duckdb",
     "netCDF4",
+    "cartopy",
+    "cmcrameri",
+    "matplotlib-scalebar",
+    "adjustText",
 )
 
 
 def probe_current_python() -> dict[str, Any]:
     packages: dict[str, str] = {}
-    module_map = {"scikit-learn": "sklearn"}
+    module_map = {
+        "scikit-learn": "sklearn",
+        "matplotlib-scalebar": "matplotlib_scalebar",
+    }
     for dist_name in CANDIDATE_PACKAGES:
         mod_name = module_map.get(dist_name, dist_name)
         if importlib.util.find_spec(mod_name) is not None:
@@ -90,6 +97,13 @@ TIER_B_PACKAGES = (
     "scikit-learn",
 )
 
+CARTOGRAPHY_PACKAGES = (
+    "adjustText",
+    "cartopy",
+    "cmcrameri",
+    "matplotlib-scalebar",
+)
+
 
 @lru_cache(maxsize=16)
 def _cached_runtime_capabilities(launcher_str: str, has_qgis_process: bool) -> dict[str, Any]:
@@ -97,6 +111,7 @@ def _cached_runtime_capabilities(launcher_str: str, has_qgis_process: bool) -> d
     packages = probe.get("packages") or {}
     has_qgis = bool(has_qgis_process or probe.get("has_qgis"))
     tier_b = [pkg for pkg in TIER_B_PACKAGES if pkg in packages]
+    cartography = [pkg for pkg in CARTOGRAPHY_PACKAGES if pkg in packages]
     if has_qgis and tier_b:
         mode = "dual"
     elif tier_b:
@@ -109,6 +124,7 @@ def _cached_runtime_capabilities(launcher_str: str, has_qgis_process: bool) -> d
         "mode": mode,
         "has_qgis": has_qgis,
         "tier_b_available": tier_b,
+        "cartography_available": cartography,
     }
 
 
@@ -118,5 +134,6 @@ def runtime_capabilities(launcher: Path, *, has_qgis_process: bool = False) -> d
             "mode": "qgis_only" if has_qgis_process else "minimal",
             "has_qgis": has_qgis_process,
             "tier_b_available": [],
+            "cartography_available": [],
         }
     return dict(_cached_runtime_capabilities(str(launcher.expanduser().resolve()), has_qgis_process))

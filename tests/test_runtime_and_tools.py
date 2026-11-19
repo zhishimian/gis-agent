@@ -1127,6 +1127,9 @@ def test_spatial_vitals_attachment_and_runtime_capabilities(tmp_path: Path) -> N
     assert caps1["mode"] in {"tier_b", "dual"}
     assert "pykrige" in caps1["tier_b_available"]
     assert "esda" in caps1["tier_b_available"]
+    assert "cartography_available" in caps1 and isinstance(caps1["cartography_available"], list)
+    if importlib.util.find_spec("cartopy") is not None:
+        assert {"adjustText", "cartopy", "cmcrameri", "matplotlib-scalebar"}.issubset(set(caps1["cartography_available"]))
 
     script = tmp_path / "make_outputs.py"
     vec_out = tmp_path / "pts.gpkg"

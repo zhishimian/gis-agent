@@ -1,26 +1,20 @@
 ---
 name: gis-cartography
-description: Create and revise thematic maps with tested Matplotlib examples, fonts, classification and export helpers. Use for requested maps, overlays and multi-panel figures. Check actual geometry and legends; skip data-only analysis and numeric verification.
-compatibility: Requires the checkout's plotting helpers plus Matplotlib, GeoPandas and Rasterio in GIS Python. Other hosts must expose the checkout on PYTHONPATH.
+description: Design and revise publication-grade thematic maps, study-area locator maps, and color-linked composite figures with composable Matplotlib/Cartopy primitives. Match complexity to user intent, keep typography large and even-integer, and export editable layered SVGs.
+compatibility: Requires the checkout's plotting helpers plus Matplotlib, GeoPandas and Rasterio in GIS Python (optional Cartopy, cmcrameri, matplotlib-scalebar, adjustText enhance Tier B). Other hosts must expose the checkout on PYTHONPATH.
 ---
 
 # Thematic cartography
 
-Choose content, visual encoding and layout around the reader's geographic question. Reuse completed analysis, actual layers, fields, units and CRS. Execute free Python through the configured GIS interpreter; Matplotlib Agg needs no QgsApplication or Qt.
-Keep uncertain georeferencing or incomplete analytical coverage explicit in the delivery; do not promote a diagnostic candidate to a verified map. Reuse unchanged analytical intermediates and fix display defects without repeating expensive analysis.
-Keep the map focused on geography. Add only necessary titles, legends, units, scale bars, direction cues and place labels. By default, put formulas, CRS/method explanations and technical reports outside the figure; avoid stacked subtitles and explanatory panels. User titles and labels may use any supported language.
+Design every map around the user's geographic question. Reuse verified analytical layers, fields, units and CRS; inspect geometry types, NoData masks and extent before styling. Never fabricate unverified layers; disclose incomplete coverage outside the figure.
 
-Read only what is needed:
+## Non-negotiable aesthetic & engineering rules
+1. **Zero unrequested sub-panels, zero subtitles & single-language legends**: Do NOT add unrequested statistical sidebars OR unrequested regional zoom panels/insets unless the user asks (only study-area locator maps include a macro locator). NEVER add a subtitle line (`subtitle_detected_warning`), `Sources:` footers or prose. Match text strictly to the prompt's language using bundled open-source print typography (`configure_plotting(font_style="serif")` for `Source Serif 4 + LXGW WenKai Lite`, or `"kaiti"`), keeping legend titles strictly `Variable (unit)`.
+2. **Skewed continuous colorbars & layer z-order**: Continuous rasters/fields MUST pair `nordic_snow`/`slate_teal`/`batlow` + `build_perceptual_norm(values)` + `add_continuous_colorbar` with explicit `#f7f7f7` zero isolation so mid-range values stay rich rather than pale. Enforce strict `zorder`: context land/ocean (`0-1`) -> thematic fills (`2`) -> lakes/hydro (`3`) -> minor internal borders (`4`) -> points/roads (`5-6`, refined size with white edge halos) -> **national / primary study-area boundary (`zorder=8`, NEVER occluded by dots)** -> chrome (`10+`).
+3. **Keep text off map geography & lower-zone scalebar placement**: Avoid placing explanatory text, captions or busy labels directly atop mapped thematic land areas; keep titles, legends and colorbars in outer gutters or unoccupied margins/ocean (`add_leader_callouts`, NEVER white `bbox` pills `callout_box_warning`). Always place scalebars in the **lower zone** (`lower left`, `lower right`, or `lower center` over empty ocean/margin—never upper corners), keep north arrows (`compass_star`) and labels inside spines (`frame_overflow_warning == False`), and use `add_graticule_frame` (`duplicate_axis_ticks_warning == False`).
+4. **Standard study-area locator discipline**: Always paint surrounding states/countries on the MAIN map (`zorder=1`, `#efeeea` fill + `#c4c0b8` borders—never float the study zone on blank white). Crop the macro locator tightly around the host country + neighbors inside `add_locator_inset(..., shape="circle" or compact rect)` with a clean dashed focus box (no cross-axes connector lines).
+5. **4-tier even fonts & fast vector budgets**: Keep standalone maps `~8.5-9.0 in` wide with `<= 4` even-integer font sizes (`10 / 12 / 14 / 16 pt` via `apply_publication_theme(..., fig_width=...)`). Never plot via `for row in gdf.itertuples()`; simplify `> 5,000`-feature layers and set `rasterized=True` on continuous rasters/dense backdrops so each render finishes `<= 15 s`, preserving `>= 2` `read_image` QA rounds.
 
-- Vector overlay: [vector_map.py](scripts/vector_map.py).
-- Continuous or classified values: [choropleth.py](scripts/choropleth.py).
-- Original-domain Fisher-Jenks with shared labels/counts/legend: [classify_values.py](scripts/classify_values.py); see [API](references/api.md#fisher-jenks).
-- Raster, vector, inset and statistics: [raster_composite.py](scripts/raster_composite.py).
-- Environment, inputs, outputs and runnable settings: [API](references/api.md).
-- Encoding and layout choices: [design](references/design.md).
-- Fonts, projection and raster failures: [gotchas](references/gotchas.md).
-- Image feedback and stopping: [review](references/review.md).
-- Physical datasets and layer names: [shared I/O](../gis-data-io-and-staging/references/data-io.md).
-
-Use arbitrary Figure/Axes/Artists; examples are editable starting points. Complete required figures before polishing details. Inspect the current whole image, crop only uncertain details, and fix observed displacement, occlusion, encoding or clipping defects together. Stop when no remaining defect changes task interpretation.
-Deliver PNG/SVG/PDF and rerunnable code. For uncertain analytical results consult gis-verification; image appearance alone cannot establish data correctness.
+## Workflow & references
+- **Two-stage export**: Iterate fast on PNG (`formats=("png",)`), confirm zero warnings across `typography`, `hygiene` and `clipped_texts` via `read_image`, then run one final `formats=("png", "svg")` (`svg.fonttype="none"` editable `<text>`, `gid` groups) and stop.
+- **References & examples**: [color guide](references/color.md), [design & typography](references/design.md), [primitives & API](references/api.md), [visual QA & stopping](references/review.md), [gotchas](references/gotchas.md), [data I/O](../gis-data-io-and-staging/references/data-io.md); [publication_composite.py](scripts/publication_composite.py), [vector_map.py](scripts/vector_map.py), [choropleth.py](scripts/choropleth.py), [classify_values.py](scripts/classify_values.py), [raster_composite.py](scripts/raster_composite.py).

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gis-agent"
-version = "9.0.2"
-description = "Lightweight, verifiable GIS Coding Agent with multi-endpoint adapters"
+version = "9.0.5"
+description = "OpenGIS-Agent: Verifiable Geospatial Coding & Publication-Grade Cartography Agent (Python / GeoPandas / Rasterio / PyQGIS / MCP)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -43,6 +43,10 @@ geo = [
     "esda>=2.6",
     "duckdb>=1.1",
     "netCDF4>=1.7",
+    "cartopy>=0.23",
+    "cmcrameri>=1.9",
+    "matplotlib-scalebar>=0.8",
+    "adjustText>=1.2",
 ]
 dev = [
     "pytest>=8.0",

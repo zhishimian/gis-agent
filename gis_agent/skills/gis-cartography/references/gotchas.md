@@ -23,3 +23,11 @@
 - Keep explicit fig/ax, export that figure, and close it. Do not initialize QGIS/Qt for Matplotlib.
 - A file can exist after a failed run; retain the failure rather than accepting partial stdout. Re-read the current image after edits.
 - In GIS-Agent an image is visible only to the immediately following model request. Use the preview when the full PNG exceeds reader limits.
+- Offline Cartopy environments (`PROJ_NETWORK=OFF`): `cartopy.feature` downloads fail without cached Natural Earth files. Plot supplied local vector layers with `transform=ccrs.PlateCarree()` instead of fetching remote borders.
+- Cartopy `GeoAxes` incompatibility with `sharex`/`sharey`: never pass `sharex=geo_ax` directly to `fig.add_subplot`; use `attach_marginal_profiles(..., main_projection=...)` and guard `"geo" in ax.spines` before editing spines.
+- Font order: call `configure_plotting()` BEFORE `apply_publication_theme()` so registered CJK and Latin font families remain intact.
+- Vector plotting speed & SVG size: NEVER loop `for row in gdf.itertuples(): gpd.GeoSeries([row.geometry]).plot(...)`—a single vectorized `.plot()` is 50-100x faster. Simplify polygon/line layers exceeding `5,000` features and pass `rasterized=True` on ultra-dense background layers so renders stay `< 15 s` and SVGs `< 8 MB`.
+- Duplicate tick labels: when placing projected data, call `add_graticule_frame(ax, crs=...)` to replace raw `1e6` metric ticks with DMS labels; never overlay manual `ax.text(..., "8°S")` without clearing default major tick formatters (`duplicate_axis_ticks_warning`).
+- Neighbor context visibility: never draw a full-extent opaque white `Rectangle` above background administrative boundaries (`zorder=2` masking `zorder=1` states); keep out-of-scope land `#e8e7e4`–`#f0f0f0` with muted borders visible beneath the study highlight.
+- Boxed callout pills: avoid `bbox=dict(boxstyle="round", fc="#ffffff")` on map annotations over thematic fills (`callout_box_warning`); use `add_leader_callouts` with white `path_effects` halos positioned cleanly inside map frame borders (`frame_overflow_warning`).
+- Layer occlusion: ALWAYS place national/study-area outlines at `zorder=8` ABOVE overlaid scatter points (`zorder=5-6`) so dots never chop border lines; avoid plotting extraneous explanatory text atop mapped thematic landmass or placing scalebars in the upper map corners.

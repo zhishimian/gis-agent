@@ -1,71 +1,132 @@
-# GIS-Agent V9.0.4
+<div align="center">
 
-单 Agent GIS 助手。纯 Python 状态机（`AgentLoopRunner`）与标准库 SQLite 检查点（`SqliteCheckpointer`）管理模型与工具往返，核心运行时零 `langgraph` / `tokenizers` 依赖。支持独立 Python（`uv` 锁定环境）与 QGIS Processing / PyQGIS 双后端执行空间计算，Matplotlib、GeoPandas、Rasterio 负责静态制图。
+# 🌍 OpenGIS-Agent
 
-## 环境与三端入口
+**A Verifiable Geospatial Coding & Publication-Grade Cartography Agent**
 
-项目依赖由 [pyproject.toml](pyproject.toml) 与 [uv.lock](uv.lock) 分组声明，同时兼容历史 Conda 环境 [environment.yml](environment.yml)：
+[![Version](https://img.shields.io/badge/version-v9.0.5-1c60a6.svg)](pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](pyproject.toml)
+[![uv](https://img.shields.io/badge/env-uv%20managed-de5fe9.svg)](https://docs.astral.sh/uv/)
+[![QGIS & GeoPandas](https://img.shields.io/badge/backends-GeoPandas%20%7C%20Rasterio%20%7C%20PyQGIS-589632.svg)](gis_agent/skills/gis-data-io-and-staging/SKILL.md)
+[![MCP Ready](https://img.shields.io/badge/MCP-STDIO%20Server-0d585f.svg)](gis_agent/adapters/harness_mcp.py)
+[![Bundled Fonts](https://img.shields.io/badge/fonts-Source%20Serif%204%20%2B%20LXGW%20WenKai%20Lite%20(OFL)-8f6b3c.svg)](gis_agent/integrations/plotting/fonts/OFL-LICENSE.txt)
+
+*Built as a lightweight, framework-free spatial Code Agent with static KV-cache-friendly tool schemas, zero-turn objective spatial vitals, dual-environment (standalone Python + PyQGIS) graceful fallback, and editable publication cartography.*
+
+[Showcase Gallery](#-cartography-showcase) • [Architecture](#-core-architecture) • [Cartography Engine](#-publication-cartography-engine) • [Quickstart](#-quickstart) • [Roadmap & Contributing](CONTRIBUTION_AND_NEXT_STEPS.md)
+
+</div>
+
+---
+
+## 🎨 Cartography Showcase
+
+OpenGIS-Agent autonomously plans visual hierarchy, projection selection, skewed perceptual normalization, layer z-ordering, and non-overlapping typography—delivering both **multi-panel scientific composites** and **clean study-area locator maps** as `300 dpi` PNGs alongside **editable `<text>` layered SVGs** for Illustrator / Inkscape / Figma refinement.
+
+### 1. Publication Multi-Panel Scientific Composite
+*Asymmetric 62/38 GridSpec composite linking spatial snowfall surfaces (`nordic_snow` + `build_perceptual_norm`), Amtrak exposure tiers with broken-line-free national border z-ordering, continuous gradient legend, state rankings, and latitudinal exposure profiles (`6.51 MB` editable SVG).*
+
+![CONUS Seasonal Snowfall and Amtrak Winter Exposure Scientific Composite](assets/showcase_conus_scientific_composite.png)
+
+### 2. Standard Study-Area Locator Map
+*Map-first research locator featuring uncolored-yet-bordered neighbor context, bundled SIL OFL `Source Serif 4` print typography, compact circular globe inset, bespoke compass star + lower-zone cartographic scalebar, and crisp 4-sided DMS coordinates (`8.14 MB` editable SVG).*
+
+![Rondônia Study Area Locator Map](assets/showcase_rondonia_study_area.png)
+
+---
+
+## ✨ Core Architecture
+
+OpenGIS-Agent avoids brittle 100-tool JSON wrappers and heavy orchestration frameworks. Instead, a **pure-Python state machine** (`AgentLoopRunner` + SQLite checkpointing in `gis_agent/persistence/`) pairs open-ended Python spatial scripting with a **compact static tool surface** (`9` cache-friendly schemas) and **seven modular domain Skills**:
+
+- **Static KV-Cache-Friendly Protocols**: Fixed top-level tool schemas keep multi-turn prompt prefixes cached across long analytical & cartographic workflows (`search_qgis_tools`, `run_qgis_algorithm`, `run_python_script`, `inspect_data`, `summarize_fields`, `check_spatial_relation`, `read_image`, etc.).
+- **Zero-Turn Objective Spatial Vitals (`inspect_fast`)**: Newly created vector and raster files automatically emit objective metadata (CRS units, feature/pixel dimensions, `dtype`, `nodata`, valid ratio, value extrema, and sample invalid geometries) plus tiered `notice` / `warning` / `fatal` anomaly signals—catching silent `-9999` leaks, empty outputs, and projection mismatches on the exact turn they occur.
+- **Dual-Environment Spatial Execution (`runtime_capabilities`)**: Runs out-of-the-box in a standalone `uv` environment (`GeoPandas`, `Rasterio`, `PyOGRIO`, `SciPy`, `NetworkX`, `DuckDB`, `PyKrige`, `libpysal`, `esda`, `Cartopy`) and seamlessly detects optional desktop QGIS Processing / PyQGIS (`GIS_AGENT_QGIS_DIR`), falling back cleanly between Tier-B libraries and pure NumPy/SciPy/Matplotlib Tier-A implementations.
+- **Process-Isolated Execution & Verification Gate**: Windows/POSIX subprocess isolation with timeout tree cleanup, cross-platform atomic JSON writes, `needs_input` / `blocked` honest abstention checkpoints, and reproducible invariant checks.
+
+### Seven Modular Geospatial Skills (`gis_agent/skills/`)
+
+| Skill | Domain Scope | Spec |
+| :--- | :--- | :--- |
+| **`gis-data-io-and-staging`** | Multi-layer GPKG/GDB/Parquet/GeoTIFF I/O, `pyogrio`/DuckDB pushdown, resumable staged artifacts | [SKILL.md](gis_agent/skills/gis-data-io-and-staging/SKILL.md) |
+| **`gis-vector-and-network`** | Source/analysis/delivery CRS separation, spatial join key audits, tile-halo chunking, directed road routing | [SKILL.md](gis_agent/skills/gis-vector-and-network/SKILL.md) |
+| **`gis-raster-and-imagery`** | Radiometric DN vs. reflectance scaling, `WarpedVRT` grid alignment, windowed streaming, NetCDF/HDF | [SKILL.md](gis_agent/skills/gis-raster-and-imagery/SKILL.md) |
+| **`gis-terrain-and-hydrology`** | Bare-earth DEM vs. DSM separation, sink conditioning, D8 flow routing, catchment & flood volume checks | [SKILL.md](gis_agent/skills/gis-terrain-and-hydrology/SKILL.md) |
+| **`gis-spatial-statistics`** | Moran's I / LISA, spatial weights, Ordinary Kriging / IDW, spatial block CV (`esda`/`pykrige` or SciPy) | [SKILL.md](gis_agent/skills/gis-spatial-statistics/SKILL.md) |
+| **`gis-verification`** | Metamorphic & conservation checks, boundary counterexamples, anomaly triage, honest abstention | [SKILL.md](gis_agent/skills/gis-verification/SKILL.md) |
+| **`gis-cartography`** | Composable primitives, scientific palettes, typography ladder, layout/hygiene QA, layered SVG export | [SKILL.md](gis_agent/skills/gis-cartography/SKILL.md) |
+
+---
+
+## 🗺 Publication Cartography Engine
+
+Located in [`gis_agent/integrations/plotting/`](gis_agent/integrations/plotting/):
+
+- **Composable Map Primitives ([`primitives.py`](gis_agent/integrations/plotting/primitives.py))**:
+  - `apply_publication_theme`: 4-tier even-integer font ladder (`10 / 12 / 14 / 16 pt`, scaled proportionally to figure width) paired with bundled SIL OFL 1.1 [`Source Serif 4` + `LXGW WenKai Lite`](gis_agent/integrations/plotting/fonts/OFL-LICENSE.txt) (`font_style="serif"` / `"kaiti"` / `"fangsong"` / `"sans"`).
+  - Curated Scientific Palettes & Perceptual Normalization: Crameri (`batlow`, `vik`, `roma`, `lajolla`, `oslo`), CARTOColors, Paul Tol, Okabe–Ito, editorial muted ramps (`nordic_snow`, `slate_teal`, `muted_ochre`, `sage_forest`), bivariate matrices (`build_bivariate_palette`, `bivariate_classify`), explicit rainbow/jet bans (`BANNED_CMAPS`), and skewed-distribution `build_perceptual_norm`.
+  - Modular Chrome & Containers: `add_continuous_colorbar` (with isolated `0` / hatched `NoData` swatches), `add_clean_legend`, `add_bivariate_legend`, `add_graticule_frame` (4-sided DMS ticks replacing raw projected meters), `add_scalebar_and_north` (segmented/ticked lower-zone scalebar + 8-facet compass star / sleek needle), `add_locator_inset` (`"circle"` or `"rect"`), `add_leader_callouts` (halo-only `adjustText`), `find_quiet_corner`, and `attach_marginal_profiles`.
+- **Automated Quality & Hygiene Diagnostics ([`runtime.py`](gis_agent/integrations/plotting/runtime.py))**:
+  - `export_figure(..., formats=("png", "svg"))` embeds `svg.fonttype="none"` (true editable `<text>` nodes + semantic `gid` layer groups) and attaches quantitative self-audit checks: `margin_whitespace_ratio`, `typography` (even-tier & minimum legibility floor checks), and `hygiene` (`subtitle_detected_warning`, `callout_box_warning`, `duplicate_axis_ticks_warning`, `clipped_text_warning`, `frame_overflow_warning`).
+
+---
+
+## 🚀 Quickstart
+
+### 1. Install with `uv`
 
 ```powershell
-# 最小核心 + CLI + 测试环境
+# Minimal core + CLI + test runner
 uv sync --extra cli --extra dev
 
-# 独立全功能地理计算环境（无需预装桌面 QGIS）
-uv sync --extra cli --extra vision --extra geo
+# Standalone full geospatial analysis & publication cartography stack (no desktop QGIS required)
+uv sync --extra cli --extra dev --extra geo
 ```
 
-在本机 `.env` 中配置 `DEEPSEEK_API_KEY`；若需调用 `qgis:*` / `native:*` / `gdal:*` 算法，配置 `GIS_AGENT_QGIS_DIR`（未配置时自动降级为纯 Python 独立模式）。入口为：
+### 2. Configure `.env`
+
+Create `.env` in the repository root:
+
+```env
+DEEPSEEK_API_KEY=your_api_key_here
+# Optional: enable desktop PyQGIS / Processing algorithms alongside standalone Python
+# GIS_AGENT_QGIS_DIR=E:/exe/qgis
+```
+
+### 3. Run OpenGIS-Agent
+
+Three adapter entrypoints live in [`gis_agent/adapters/`](gis_agent/adapters/):
 
 ```powershell
-python main.py
+# Interactive CLI session (supports resume, waiting inspection & history audit)
+uv run python main.py --session my-gis-task
+uv run gis-agent waiting --session my-gis-task
+uv run gis-agent history --session my-gis-task
+
+# Standard STDIO MCP Server for Claude Code / Codex / Cursor / Antigravity
+uv run gis-agent-mcp
+# or: python -m gis_agent.adapters.harness_mcp
 ```
 
-三端适配层位于 `gis_agent/adapters/`：
-- `cli.py`：终端交互与离线会话查询入口。
-- `harness_mcp.py`：面向外部通用 Coding Agent（Claude Code / Codex / Cursor）的标准 STDIO MCP 服务端（`python -m gis_agent.adapters.harness_mcp` 或 `gis-agent-mcp`），零内部循环依赖，直接暴露内环空间探针、QGIS 算法网关与专业 Skills。
-- `stubs.py`：QGIS 插件端与独立桌面端边界协议（`WorkspaceContext` 画布上下文注入、`EventCallback` 实时产物事件流、`Conversation.request_stop()` 线程安全子进程树中断）。
+Frontend & QGIS plugin integration contracts (`FrontendBridge`, `WorkspaceContext`, event streaming, and thread-safe cancellation) are exposed via [`gis_agent/adapters/stubs.py`](gis_agent/adapters/stubs.py).
 
-记录保存在 `sessions/`，成果保存在 `outputs/`。输入数据保持原样。七大领域 Skills 按需读取（单工具可解任务不强读）：
+---
 
-- [I/O 与阶段执行](gis_agent/skills/gis-data-io-and-staging/SKILL.md)：多图层容器读写、`pyogrio`/DuckDB 下推过滤、业务键保留与稳定阶段文件拆解。
-- [矢量与路网](gis_agent/skills/gis-vector-and-network/SKILL.md)：源/分析/交付 CRS 分离、多重连接与分块晕区叠加、Primal MultiDiGraph 有向路网可达与选址。
-- [栅格与影像](gis_agent/skills/gis-raster-and-imagery/SKILL.md)：辐射定标（NDVI vs SAVI/EVI 量纲）、参考网格对齐重采样、`block_windows` 分窗流式计算、Zonal Stats 与配准可信度。
-- [地形与水文](gis_agent/skills/gis-terrain-and-hydrology/SKILL.md)：DEM/DSM/物体高度分离、工程地形 vs 填洼水文表面、GRASS/ESRI D8 流向编码差异、嵌套流域 vs 子区切分及连通蓄水量。
-- [空间统计与插值](gis_agent/skills/gis-spatial-statistics/SKILL.md)：全局 Moran's I、Kriging 变异函数与空间块交叉验证（支持 `esda`/`libpysal`/`pykrige` Tier B 与 `scipy`/`numpy` Tier A 双路由降级）。
-- [专业核查](gis_agent/skills/gis-verification/SKILL.md)：外部性质/蜕变不变量取证（守恒、置换不变性、边界对照）、异常信号分诊与诚实拒答边界。
-- [专题制图](gis_agent/skills/gis-cartography/SKILL.md)：自由 Python 制图和图像回看。
+## 🧪 Verification & Benchmarks
 
-## 静态工具协议、运行能力注入与快速探针
-
-- **静态 Schema（KV Cache 友好）**：检索 `search_qgis_tools` 返回算法参数契约，执行统一走 `run_qgis_algorithm(algorithm_id, parameters, project_path)`，运行时动态校验必填键与未知参数，并在尾部动态状态注入缓存的 `runtime_capabilities`（`has_qgis` / `tier_b_available`）与连续失败退避信号 `stagnation_alert`。
-- **分层异常信号、非对称门控与事件驱动校验**：`inspect_fast` 为新空间产物按 `notice`/`warning`/`fatal` 三级挂载客观异常（如 `ZERO_FEATURES`、`MISSING_CRS`、`ALL_NODATA_RASTER`、`CORRUPT_OR_UNREADABLE`）；仅当出现空间异常、连续失败/超时或结束门控拦截时附带 `verification_hint` 引导按需读取 `gis-verification`（常态零额外 token）；`finish_task` 明确区分“合法近似继续并披露 / 主动 `needs_input` 联合合议澄清 / 确定性 `blocked` 止损”，并在 `business` 尾部注入超时跨文件名归并告警与成功态原地空转收敛提示 `efficiency_hint`。
-- **快速探针与自动空间体征**：`inspect_data` 与 `run_python_script`/`run_qgis_algorithm` 自动为新产出文件附带轻量级客观体征 `outputs[].spatial` / `spatial_vitals`（CRS 单位、要素数/像元网格、`dtype`、`nodata`、`valid_ratio`、极值与无效几何抽样数），零额外模型轮次即可核对异常。
-- **执行器安全回执**：子进程超时整树回收（`taskkill /F /T`）、默认 `120s`（上限 `600s`）超时控制、首尾双向保留错误堆栈、递归扫描子目录新增产物、写入目录边界拦截、`finish_task` 零字节产物拦截、Plain Python 隔离外部冲突 `PROJ_LIB`/`GDAL_DATA` 环境变量，以及 JSON 原子替换 Windows 瞬时句柄重试。
-- `execution_history` 按需查当前 Session 的真实参数、脚本快照、结果和错误。历史 0 调用的 V8.1 `local_replay` 模块已归档至 `archive/v8_replay/`。
-
-## 等待用户与继续
-
-Agent 缺少必要信息时可用 `needs_input` 提问。CLI 会展示问题及保留成果，输入回答即可在同一 Session 继续。输入 `exit` 或在提示处结束输入会保存等待；再次使用同一 `--session` 打开会显示原问题。等待时输入 `cancel` 可取消任务并保留成果。运行中的原生计算不支持内存级暂停。
+All core tools, spatial skills, cartographic primitives, and benchmark runners are covered by offline pytest suites (`benchmarks/geoagentbench/` houses the isolated blind evaluation harness):
 
 ```powershell
-python main.py --session my-task chat
-python main.py --session my-task waiting
+# Fast offline unit & benchmark-runner tests (seconds)
+uv run pytest tests/ -m "not slow and not live" -q
+uv run pytest benchmarks/geoagentbench/test_runner.py -q
+
+# Full non-live suite (includes heavy spatial & real desktop QGIS checks when configured)
+uv run pytest tests/ -k "not live" -q
 ```
 
-`waiting` 只读查看已有问题，无需模型 Key 或启动 QGIS。完成状态包括 `completed`、`partial`、`needs_input`、`blocked`、`cancelled`；`answer` 用于普通问答。
+---
 
-## 输出预算与验证
+## 🧭 Roadmap & Contributing
 
-DeepSeek 默认 `max_tokens=393216`。配置入口为 `GIS_AGENT_MAX_OUTPUT_TOKENS`。输入预算同时为输出和协议留出空间。截断响应原件保留在 Session，其整批工具调用均拒绝执行。
-
-```powershell
-# 日常快速本地检查（秒级，跳过外部 QGIS 与 live API）
-python -B -m pytest tests benchmarks/geoagentbench/test_runner.py -m "not slow and not live" -v -p no:cacheprovider
-
-# 全量离线验证（含全部真实 QGIS 集成测试与独立 uv 运行环境验证）
-python -B -m pytest tests benchmarks/geoagentbench/test_runner.py -k "not live" -v -p no:cacheprovider
-```
-
-本地离线测试无需 HuggingFace `tokenizers` 缓存；若配置 `GIS_AGENT_QGIS_DIR` 则运行全部真实 QGIS 集成测试。带 `live` 的测试会连接真实模型，需单独授权运行。
-
-重构设计见 [V9.0 重构设计](docs/v9.0-refactoring-design.md)，总体蓝图见 [V9 总体改造方针与落地蓝图](V9_总体改造方针与落地蓝图.md)，行业调研见 [主流 GIS Agent 与制图方案深度调研报告](主流GIS_Agent与制图方案深度调研报告.md)，开发交接见 [HANDOFF](HANDOFF.md)。
+We welcome contributions across spatial Skills, cartographic primitives, QGIS / Desktop UI plugins, and open GeoAI evaluation benchmarks! See **[CONTRIBUTION_AND_NEXT_STEPS.md](CONTRIBUTION_AND_NEXT_STEPS.md)** for the full three-track roadmap and contributor guide.

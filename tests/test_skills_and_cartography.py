@@ -683,3 +683,478 @@ def test_new_v902_skill_scripts_offline(tmp_path: Path) -> None:
     assert meta["permutation_good_invariant"] and not meta["permutation_pos_bug_invariant"]
     assert meta["boundary"]["boundary_only_keys"] == ["edge"]
     assert meta["ndvi_scale_invariant"] and not meta["savi_scale_invariant"]
+
+
+def test_v905_palette_bank_and_anti_slop_guard(monkeypatch) -> None:
+    """V9.0.5 科学色带库、禁用默认伪彩红线与双变量分箱测试（含缺失 cmcrameri 的 Tier A 降级）。"""
+    import importlib.util
+    if importlib.util.find_spec("matplotlib") is None or importlib.util.find_spec("numpy") is None:
+        pytest.skip("当前解释器缺少 matplotlib/numpy。")
+
+    import numpy as np
+    from gis_agent.integrations.plotting.primitives import (
+        BANNED_CMAPS,
+        GEO_COLORS,
+        bivariate_classify,
+        build_bivariate_palette,
+        get_bivariate_palette,
+        get_palette,
+        get_scientific_cmap,
+        list_palettes,
+    )
+
+    catalog = list_palettes()
+    assert len(catalog["sequential"]) >= 17
+    assert len(catalog["diverging"]) >= 11
+    assert len(catalog["qualitative"]) >= 10
+    assert len(catalog["bivariate"]) >= 5
+    assert {"land_muted", "ocean_soft", "nodata_gray", "zero_neutral"}.issubset(GEO_COLORS)
+
+    for bad in ("jet", "rainbow", "hsv", "JET", "nipy_spectral", "prism", "rainbow_r"):
+        assert bad.lower() in BANNED_CMAPS or bad.lower().removesuffix("_r") in BANNED_CMAPS
+        with pytest.raises(ValueError, match="禁用"):
+            get_scientific_cmap("sequential", bad)
+        with pytest.raises(ValueError, match="禁用"):
+            get_palette(bad)
+
+    for kind, name in (("sequential", "carto_teal"), ("sequential", "hypsometric"), ("diverging", "tol_sunset"), ("qualitative", "okabe_ito")):
+        cmap = get_scientific_cmap(kind, name, n=5, nodata_color="#d9d9d9")
+        assert cmap.N == 5
+        assert tuple(round(float(v), 3) for v in cmap.get_bad()[:3]) == (0.851, 0.851, 0.851)
+
+    grid5 = build_bivariate_palette("#f2f2f2", "#1e78b4", "#e66101", "#2b1c47", n=5)
+    assert len(grid5) == 5 and all(len(r) == 5 for r in grid5)
+    assert grid5[0][0] == "#f2f2f2" and grid5[4][4] == "#2b1c47"
+    assert len(get_bivariate_palette("stevens_pinkblue")) == 3
+
+    biv3 = bivariate_classify([1.0, 5.0, 9.0, np.nan], [10.0, 20.0, 30.0, 40.0], bins=3, method="equal")
+    assert biv3["x_bin"].tolist() == [0, 1, 2, -1]
+    assert biv3["y_bin"].tolist() == [0, 1, 2, -1]
+    assert biv3["pair_index"].tolist() == [0, 4, 8, -1]
+
+    bivq = bivariate_classify([1.0, 2.0, 3.0, np.nan, 4.0], [10.0, 20.0, 30.0, 40.0, 50.0], bins=3, method="quantile")
+    assert bivq["x_bin"].tolist() == [0, 0, 1, -1, 2] and bivq["y_bin"][3] == -1 and bivq["pair_index"][3] == -1
+
+    # 模拟无 cmcrameri 的桌面 QGIS Python（Tier A）
+    monkeypatch.setitem(sys.modules, "cmcrameri", None)
+    monkeypatch.setitem(sys.modules, "cmcrameri.cm", None)
+    for name in ("batlow", "lajolla", "vik", "roma"):
+        kind = "diverging" if name in {"vik", "roma"} else "sequential"
+        fallback_cmap = get_scientific_cmap(kind, name, reverse=True)
+        assert fallback_cmap(0.5) is not None
+
+
+@pytest.mark.parametrize("simulate_tier_a", [False, True])
+def test_v905_cartographic_primitives_and_layout_diagnostics(tmp_path: Path, monkeypatch, simulate_tier_a: bool) -> None:
+    """六大制图原语在 Tier B 与模拟 Tier A 下均可渲染，并检测外围白边比例。"""
+    import importlib.util
+    if any(importlib.util.find_spec(m) is None for m in ("geopandas", "matplotlib", "shapely")):
+        pytest.skip("当前解释器缺少基础制图依赖。")
+
+    if simulate_tier_a:
+        for pkg in ("cartopy", "cartopy.crs", "cmcrameri", "cmcrameri.cm", "matplotlib_scalebar", "matplotlib_scalebar.scalebar", "adjustText"):
+            monkeypatch.setitem(sys.modules, pkg, None)
+
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    from gis_agent.integrations.plotting.primitives import (
+        add_bivariate_legend,
+        add_clean_legend,
+        add_graticule_frame,
+        add_leader_callouts,
+        add_locator_inset,
+        add_scalebar_and_north,
+        apply_publication_theme,
+        attach_marginal_profiles,
+        get_scientific_cmap,
+    )
+    from gis_agent.integrations.plotting.runtime import MapPanel, configure_plotting, export_figure
+
+    cfg = configure_plotting(font_style="sans", svg_editable_text=True)
+    import matplotlib
+    import matplotlib.pyplot as plt
+
+    assert cfg["font_style"] == "sans" and cfg["svg_editable_text"] is True
+    assert matplotlib.rcParams["svg.fonttype"] == "none"
+
+    fonts_before = list(matplotlib.rcParams["font.family"])
+    theme = apply_publication_theme("editorial_warm", font_scale=1.0, fig_width=12.0)
+    assert list(matplotlib.rcParams["font.family"]) == fonts_before
+    assert theme["style"] == "editorial_warm"
+    for tier in ("T1", "T2", "T3", "T4"):
+        assert theme["fonts"][tier] >= 12 and theme["fonts"][tier] % 2 == 0
+
+    if not simulate_tier_a:
+        serif_cfg = configure_plotting(font_style="serif", svg_editable_text=True)
+        assert serif_cfg["font_style"] == "serif"
+        assert any("Times New Roman" in fam or "SimSun" in fam for fam in serif_cfg["families"]) or not serif_cfg["fonts"]
+        configure_plotting(font_style="sans", svg_editable_text=True)
+        apply_publication_theme("editorial_warm", font_scale=1.0)
+
+    gdf = gpd.GeoDataFrame(
+        {"val": [1.0, 2.0, 3.0, 4.0]},
+        geometry=[
+            box(500_000, 3_500_000, 505_000, 3_505_000),
+            box(505_000, 3_500_000, 510_000, 3_505_000),
+            box(500_000, 3_505_000, 505_000, 3_510_000),
+            box(505_000, 3_505_000, 510_000, 3_510_000),
+        ],
+        crs="EPSG:32650",
+    )
+    fig = plt.figure(figsize=(7.5, 6.2))
+    try:
+        panels = attach_marginal_profiles(fig, top=True, right=True, ratio=0.20, pad=0.035)
+        ax = panels["main"]
+        gdf.plot(ax=ax, column="val", cmap=get_scientific_cmap("sequential", "batlow"), edgecolor="#ffffff", linewidth=0.5)
+        ax.set_xlim(498_000, 512_000)
+        ax.set_ylim(3_498_000, 3_512_000)
+        ax.set_aspect("equal")
+        add_graticule_frame(ax, crs=gdf.crs, style="ticks_only", dms=True)
+        sb_info = add_scalebar_and_north(ax, crs_units="metre", loc="lower right", north_loc="upper right")
+        assert sb_info["scale_length_m"] is not None
+        inset = add_locator_inset(ax, [0.04, 0.72, 0.22, 0.22], shape="circle")
+        gdf.plot(ax=inset, facecolor="#cf597e", edgecolor="#333333")
+        add_bivariate_legend(ax, [0.05, 0.06, 0.18, 0.18], "stevens_pinkblue", x_label="X", y_label="Y")
+        add_clean_legend(ax, [("区域示例 Region", "#2a5674", 60.0)], show_pct=True, zero_label="零值", nodata_label="缺测", loc="upper left")
+        add_leader_callouts(ax, [{"label": "热点站点 Peak", "xy": (502_500, 3_502_500)}], use_adjust_text=not simulate_tier_a)
+        panels["top"].bar([502_500, 507_500], [2, 4], width=3000)
+        panels["right"].barh([3_502_500, 3_507_500], [3, 1], height=3000)
+
+        out_dir = tmp_path / ("tier_a" if simulate_tier_a else "tier_b")
+        res = export_figure(fig, out_dir, formats=("png",), map_panels=(MapPanel("main", ax, "EPSG:32650"),))
+        assert res["ok"] and Path(res["preview"]).is_file()
+        assert "layout_diagnostics" in res
+        ratios = res["layout_diagnostics"]["margin_whitespace_ratio"]
+        assert set(ratios) == {"top", "bottom", "left", "right"}
+        assert isinstance(res["layout_diagnostics"]["excessive_margin_warning"], bool)
+        if cfg["fonts"]:
+            assert not any("Glyph" in w for w in res["warnings"])
+    finally:
+        plt.close(fig)
+
+    if not simulate_tier_a:
+        # 故意构造超大外围白边与碎片过小字号图，验证 layout_diagnostics 与 typography 准确告警
+        fig_pad = plt.figure(figsize=(16, 10))
+        try:
+            ax_tiny = fig_pad.add_axes([0.36, 0.36, 0.28, 0.28])
+            gdf.plot(ax=ax_tiny)
+            for idx_t, pt_sz in enumerate((6.1, 6.5, 7.0, 7.3, 8.1, 9.2)):
+                ax_tiny.text(0.1, 0.1 + 0.1 * idx_t, f"small_{idx_t}", fontsize=pt_sz, transform=ax_tiny.transAxes)
+            ax_tiny.set_axis_off()
+            pad_res = export_figure(fig_pad, tmp_path / "padded", formats=("png", "svg"))
+            diag = pad_res["layout_diagnostics"]
+            assert diag["excessive_margin_warning"] is True
+            assert set(diag["excessive_edges"]) == {"top", "bottom", "left", "right"}
+            assert all(val > 0.25 for val in diag["margin_whitespace_ratio"].values())
+            typo = diag["typography"]
+            assert typo["small_text_warning"] is True
+            assert typo["fragmented_font_tiers_warning"] is True
+            assert typo["non_even_font_warning"] is True
+            svg_content = Path(pad_res["files"]["svg"]).read_text(encoding="utf-8")
+            assert "<text" in svg_content
+        finally:
+            plt.close(fig_pad)
+
+        # 验证 Cartopy GeoAxes 兼容路径（Robinson + circle inset + marginals）
+        import cartopy.crs as ccrs
+        fig_geo = plt.figure(figsize=(8, 4.5))
+        try:
+            proj = ccrs.Robinson()
+            geo_panels = attach_marginal_profiles(fig_geo, top=True, right=False, ratio=0.18, main_projection=proj)
+            ax_geo = geo_panels["main"]
+            ax_geo.set_global()
+            gpd.GeoDataFrame(geometry=[box(-10, 10, 40, 50)], crs="EPSG:4326").plot(
+                ax=ax_geo, transform=ccrs.PlateCarree(), color="#2a5674",
+            )
+            add_graticule_frame(ax_geo, style="clean_borderless")
+            add_scalebar_and_north(ax_geo, crs_units="degree", north=False)
+            c_in = add_locator_inset(ax_geo, [0.03, 0.12, 0.22, 0.22], shape="circle", projection=ccrs.Orthographic(10, 30))
+            assert hasattr(c_in, "projection")
+            geo_res = export_figure(fig_geo, tmp_path / "cartopy_geo", formats=("png",), map_panels=(MapPanel("global", ax_geo, proj.proj4_init),))
+            assert geo_res["ok"]
+        finally:
+            plt.close(fig_geo)
+
+
+def test_v905_publication_composite_script_offline(tmp_path: Path) -> None:
+    """V9.0.5 离线合成出版级复合图参考脚本可通过 run_python_script 运行并产出完整产物。"""
+    import importlib.util
+    if any(importlib.util.find_spec(m) is None for m in ("geopandas", "matplotlib", "shapely", "pyproj")):
+        pytest.skip("当前解释器缺少基础地理依赖。")
+
+    out_dir = tmp_path / "composite_out"
+    cfg = tmp_path / "settings.json"
+    cfg.write_text(json.dumps({"output_dir": str(out_dir), "style": "light_geo", "formats": ["png", "svg"]}), encoding="utf-8")
+    run = run_python_script(
+        Path(sys.executable),
+        tmp_path / "logs",
+        str(SCRIPTS / "publication_composite.py"),
+        [str(cfg)],
+    )
+    assert run["ok"] and run["returncode"] == 0, run
+    res = run["result"]
+    assert res["ok"] and Path(res["files"]["png"]).is_file() and Path(res["files"]["svg"]).is_file()
+    assert res["layout_diagnostics"]["excessive_margin_warning"] is False
+    typo = res["layout_diagnostics"]["typography"]
+    assert typo["small_text_warning"] is False
+    assert typo["non_even_font_warning"] is False
+    assert typo["fragmented_font_tiers_warning"] is False
+    hyg = res["layout_diagnostics"]["hygiene"]
+    assert hyg["subtitle_detected_warning"] is False
+    assert hyg["callout_box_warning"] is False
+    assert hyg["duplicate_axis_ticks_warning"] is False
+    assert hyg["clipped_text_warning"] is False
+    assert hyg["frame_overflow_warning"] is False
+    svg_txt = Path(res["files"]["svg"]).read_text(encoding="utf-8")
+    assert "<text" in svg_txt and "catchments_bivariate" in svg_txt
+    manifest = json.loads(Path(res["manifest"]).read_text(encoding="utf-8"))
+    assert "layout_diagnostics" in manifest and res["warnings"] == []
+
+
+def test_v9052_colorbar_connectors_quiet_corner_and_hygiene(tmp_path: Path) -> None:
+    """V9.0.5.2 新增低饱和色带、连续色带、缩放连线、空白角落选址与 4 项自动化制图卫生告警测试。"""
+    import importlib.util
+    if any(importlib.util.find_spec(m) is None for m in ("geopandas", "matplotlib", "shapely")):
+        pytest.skip("当前解释器缺少基础制图依赖。")
+
+    import geopandas as gpd
+    from matplotlib.colors import PowerNorm
+    import numpy as np
+    from shapely.geometry import Point, box
+
+    from gis_agent.integrations.plotting import (
+        GEO_COLORS,
+        MapPanel,
+        add_continuous_colorbar,
+        add_graticule_frame,
+        add_leader_callouts,
+        add_locator_inset,
+        add_scalebar_and_north,
+        apply_publication_theme,
+        configure_plotting,
+        export_figure,
+        find_quiet_corner,
+        get_scientific_cmap,
+        list_palettes,
+        rank_quiet_corners,
+    )
+
+    pals = list_palettes()
+    for name in ("nordic_snow", "slate_teal", "muted_ochre", "sage_forest"):
+        assert name in pals["sequential"]
+        cmap = get_scientific_cmap("sequential", name)
+        assert cmap(0.5) is not None
+    for tok in ("marker_low", "marker_mid", "marker_high", "marker_extreme"):
+        assert tok in GEO_COLORS
+
+    configure_plotting(font_style="sans", svg_editable_text=True)
+    import matplotlib.pyplot as plt
+    apply_publication_theme("light_geo", fig_width=8.5)
+
+    # 1. 验证 clean 图：连续色带 + 圆形区位缩放连线 + 空白选址，4 项 hygiene 均为 False
+    fig = plt.figure(figsize=(8.5, 6.2))
+    try:
+        ax = fig.add_axes([0.10, 0.20, 0.84, 0.72])
+        grid = np.linspace(0.0, 120.0, 40 * 40).reshape(40, 40)
+        norm = PowerNorm(gamma=0.45, vmin=0.0, vmax=120.0)
+        im = ax.imshow(grid, extent=(0, 100, 0, 100), origin="upper", cmap=get_scientific_cmap("sequential", "nordic_snow"), norm=norm)
+
+        # 构造左下空闲、右上拥挤的数据分布，测试 rank_quiet_corners / find_quiet_corner
+        mask = np.zeros((100, 100), dtype=bool)
+        mask[0:60, 40:100] = True  # upper-right occupied (row 0 = top)
+        best_r = find_quiet_corner(ax, raster_mask=mask, raster_extent=(0, 100, 0, 100))
+        assert best_r in {"lower left", "lower right"}
+
+        pts = gpd.GeoDataFrame(geometry=[Point(x, y) for x in np.linspace(55, 95, 25) for y in np.linspace(55, 95, 10)], crs="EPSG:4326")
+        ranked_v = rank_quiet_corners(ax, pts, exclude=("lower right",))
+        assert ranked_v[0][0] in {"lower left", "upper left"} and all(c != "lower right" for c, _ in ranked_v)
+
+        add_graticule_frame(ax, crs="EPSG:4326", style="ticks_only", dms=True)
+        add_scalebar_and_north(ax, crs_units="degree", loc="lower right", north_loc="upper right", use_matplotlib_scalebar=False)
+        inset = add_locator_inset(ax, [0.04, 0.66, 0.24, 0.28], shape="circle")
+        inset.set_xlim(-85, -35)
+        inset.set_ylim(-55, 12)
+
+        cb = add_continuous_colorbar(
+            fig, im, bounds=[0.10, 0.05, 0.78, 0.11], orientation="horizontal",
+            label="Accumulation (in)", zero_label="0", nodata_label="NoData",
+        )
+        assert len(cb["ticks"]) >= 3
+        add_continuous_colorbar(
+            fig, im, bounds=[0.88, 0.22, 0.10, 0.65], orientation="vertical", label="Rate",
+        )
+        add_leader_callouts(ax, [{"label": "Station A", "xy": (70, 70), "xytext": (45, 78)}], use_adjust_text=False)
+
+        clean_res = export_figure(fig, tmp_path / "clean_v9052", formats=("png", "svg"), map_panels=(MapPanel("main", ax, "EPSG:4326"),))
+        hyg = clean_res["layout_diagnostics"]["hygiene"]
+        assert hyg["subtitle_detected_warning"] is False
+        assert hyg["callout_box_warning"] is False
+        assert hyg["duplicate_axis_ticks_warning"] is False
+        assert hyg["clipped_text_warning"] is False
+        assert hyg["frame_overflow_warning"] is False
+        svg_txt = Path(clean_res["files"]["svg"]).read_text(encoding="utf-8")
+        assert "locator_inset" in svg_txt and "colorbar" in svg_txt
+    finally:
+        plt.close(fig)
+
+    # 2. 验证 Cartopy GeoAxes 与矩形/圆形定位小图路径
+    import cartopy.crs as ccrs
+    fig_g = plt.figure(figsize=(8.0, 5.2))
+    try:
+        ax_m = fig_g.add_axes([0.10, 0.12, 0.58, 0.80], projection=ccrs.Mercator())
+        ax_m.set_extent([-67, -59, -14, -7], crs=ccrs.PlateCarree())
+        gpd.GeoDataFrame(geometry=[box(-65, -13, -61, -9)], crs="EPSG:4326").plot(ax=ax_m, transform=ccrs.PlateCarree())
+        c_in = add_locator_inset(
+            ax_m, [0.03, 0.66, 0.24, 0.26], shape="circle",
+            projection=ccrs.EqualEarth(central_longitude=-60),
+        )
+        c_in.set_extent([-85, -34, -56, 13], crs=ccrs.PlateCarree())
+        ext_in = add_locator_inset(fig_g, [0.74, 0.56, 0.20, 0.30], shape="rect")
+        gpd.GeoDataFrame(geometry=[box(-85, -55, -35, 12)], crs="EPSG:4326").plot(ax=ext_in)
+        g_res = export_figure(fig_g, tmp_path / "cartopy_conn", formats=("png", "svg"), map_panels=(MapPanel("main", ax_m, "EPSG:3857"),))
+        assert g_res["ok"] and "locator_inset" in Path(g_res["files"]["svg"]).read_text(encoding="utf-8")
+    finally:
+        plt.close(fig_g)
+
+    # 3. 验证 4 项反面卫生告警均可准确命中
+    fig_bad = plt.figure(figsize=(8.0, 6.0))
+    try:
+        ax_b = fig_bad.add_axes([0.14, 0.14, 0.78, 0.70])
+        gpd.GeoDataFrame(geometry=[box(3_600_000, 8_500_000, 4_300_000, 9_100_000)], crs="EPSG:5880").plot(ax=ax_b)
+        ax_b.set_xlim(3_600_000, 4_300_000)
+        ax_b.set_ylim(8_500_000, 9_100_000)
+        # 堆叠副标题
+        fig_bad.text(0.08, 0.94, "Main Snowfall Title", fontsize=16, fontweight="bold")
+        fig_bad.text(0.08, 0.89, "A smaller lighter subtitle repeating the title", fontsize=12, color="#666666")
+        # 实心白底贴片标注
+        ax_b.annotate(
+            "Winter Park, CO", xy=(4_000_000, 8_800_000), xytext=(4_100_000, 8_900_000),
+            bbox=dict(boxstyle="round", facecolor="#ffffff", edgecolor="#666666", alpha=0.95),
+            arrowprops=dict(arrowstyle="-"),
+        )
+        # 手写 DMS 标签覆盖默认 1e6 米制刻度
+        ax_b.text(-0.02, 8_800_000, "10°S", transform=ax_b.get_yaxis_transform(), ha="right")
+        # 出界被裁切文字
+        fig_bad.text(1.03, 0.50, "Clipped Overflow Label", fontsize=12)
+
+        bad_res = export_figure(fig_bad, tmp_path / "bad_v9052", formats=("png",), map_panels=(MapPanel("main", ax_b, "EPSG:5880"),))
+        bad_hyg = bad_res["layout_diagnostics"]["hygiene"]
+        assert bad_hyg["subtitle_detected_warning"] is True
+        assert bad_hyg["callout_box_warning"] is True
+        assert bad_hyg["duplicate_axis_ticks_warning"] is True
+        assert bad_hyg["clipped_text_warning"] is True
+    finally:
+        plt.close(fig_bad)
+
+
+def test_v9053_fonts_compass_perceptual_norm_and_frame_overflow(tmp_path: Path) -> None:
+    """V9.0.5.3 宋体/楷体/仿宋默认字体、罗盘星指北针/高端比例尺、偏态感知拉伸、连线高层级与边框溢界自检测试。"""
+    import importlib.util
+    if any(importlib.util.find_spec(m) is None for m in ("geopandas", "matplotlib", "shapely")):
+        pytest.skip("当前解释器缺少基础制图依赖。")
+
+    import geopandas as gpd
+    from matplotlib.colors import Normalize, PowerNorm
+    import numpy as np
+    from shapely.geometry import box
+
+    from gis_agent.integrations.plotting import (
+        MapPanel,
+        add_graticule_frame,
+        add_locator_inset,
+        add_scalebar_and_north,
+        apply_publication_theme,
+        build_perceptual_norm,
+        configure_plotting,
+        export_figure,
+        get_scientific_cmap,
+    )
+
+    # 1. 随仓捆绑开源字体文件检查，且 serif/kaiti 栈绝不混入 Microsoft YaHei
+    fonts_dir = ROOT / "gis_agent/integrations/plotting/fonts"
+    for fname in ("SourceSerif4-Regular.ttf", "SourceSerif4-Bold.ttf", "SourceSerif4-It.ttf", "LXGWWenKaiLite-Regular.ttf", "LXGWWenKaiLite-Medium.ttf"):
+        assert (fonts_dir / fname).is_file(), fname
+
+    default_cfg = configure_plotting()
+    assert default_cfg["font_style"] == "serif"
+    assert "Source Serif 4" in default_cfg["families"] and "LXGW WenKai Lite" in default_cfg["families"]
+    assert "Microsoft YaHei" not in default_cfg["families"]
+
+    import matplotlib.pyplot as plt
+    for style_name in ("serif", "kaiti", "fangsong", "sans"):
+        cfg = configure_plotting(font_style=style_name, svg_editable_text=True)
+        assert cfg["font_style"] == style_name
+        if style_name in {"serif", "kaiti", "fangsong"}:
+            assert "Microsoft YaHei" not in cfg["families"]
+            assert "LXGW WenKai Lite" in cfg["families"]
+        apply_publication_theme("light_geo", fig_width=8.5)
+        fig_t = plt.figure(figsize=(8.5, 5.5))
+        try:
+            ax_t = fig_t.add_axes([0.12, 0.14, 0.78, 0.76])
+            gpd.GeoDataFrame(geometry=[box(0, 0, 100, 80)], crs="EPSG:32650").plot(ax=ax_t, color="#dceae8")
+            ax_t.set_xlim(0, 100)
+            ax_t.set_ylim(0, 80)
+            ax_t.set_title("OpenGIS-Agent 2024–2025 冬季累积降雪量 ≥60 66°W 55,164 km²", fontsize=16, fontweight="bold")
+            res_t = export_figure(fig_t, tmp_path / f"font_{style_name}", formats=("png",), map_panels=(MapPanel("main", ax_t, "EPSG:32650"),))
+            assert not any("Glyph" in w for w in res_t["warnings"]), (style_name, res_t["warnings"])
+        finally:
+            plt.close(fig_t)
+
+    # 2. 偏态连续场自适应 PowerNorm 与对称/均匀场退化 Normalize
+    skewed = np.array([0.0, 0.0, 1.0, 2.0, 5.0, 12.0, 30.0, 80.0, 600.0])
+    p_norm = build_perceptual_norm(skewed)
+    assert isinstance(p_norm, PowerNorm) and 0.28 <= float(p_norm.gamma) <= 0.85
+    even_vals = np.array([10.0, 50.0, 90.0])
+    u_norm = build_perceptual_norm(even_vals, positive_only=False)
+    assert type(u_norm) is Normalize
+
+    # 3. 高工艺罗盘星/细针/斜角指北针 + 阶梯/刻度比例尺 + 独立圆形/矩形定位小图全组合，零 frame_overflow_warning
+    configure_plotting(font_style="kaiti", svg_editable_text=True)
+    apply_publication_theme("light_geo", fig_width=8.6)
+    for idx_s, (s_st, n_st, s_loc, n_loc) in enumerate((
+        ("cartographic", "compass_star", "lower right", "upper left"),
+        ("ticked", "sleek_needle", "lower center", "upper right"),
+        ("cartographic", "chevron", "lower left", "upper left"),
+    )):
+        fig_c = plt.figure(figsize=(8.6, 5.6))
+        try:
+            ax_c = fig_c.add_axes([0.10, 0.14, 0.56, 0.78])
+            arr = np.linspace(0.0, 600.0, 20 * 20).reshape(20, 20)
+            ax_c.imshow(arr, extent=(0, 1_500_000, 0, 1_000_000), cmap=get_scientific_cmap("sequential", "nordic_snow"), norm=p_norm)
+            ax_c.set_xlim(0, 1_500_000)
+            ax_c.set_ylim(0, 1_000_000)
+            ax_c.set_aspect("equal")
+            add_graticule_frame(ax_c, crs="EPSG:32650", style="ticks_only", dms=True)
+            info = add_scalebar_and_north(
+                ax_c, crs_units="metre", loc=s_loc, north_loc=n_loc,
+                scale_style=s_st, north_style=n_st,
+            )
+            assert info["scale_style"] == s_st and info["north_style"] == n_st
+            assert len(info["north_artists"]) >= 3
+
+            ax_in = add_locator_inset(fig_c, [0.72, 0.56, 0.22, 0.30], shape="circle", zorder=10)
+            gpd.GeoDataFrame(geometry=[box(-80, -50, -35, 10)], crs="EPSG:4326").plot(ax=ax_in)
+            ax_in.set_xlim(-82, -33)
+            ax_in.set_ylim(-52, 12)
+
+            res_c = export_figure(fig_c, tmp_path / f"craft_{idx_s}", formats=("png", "svg"), map_panels=(MapPanel("main", ax_c, "EPSG:32650"),))
+            assert res_c["layout_diagnostics"]["hygiene"]["frame_overflow_warning"] is False, res_c["layout_diagnostics"]["hygiene"]
+            assert res_c["layout_diagnostics"]["hygiene"]["clipped_text_warning"] is False
+        finally:
+            plt.close(fig_c)
+
+    # 4. 地图内文字撞穿主图黑边框时，frame_overflow_warning 精准触发
+    fig_ov = plt.figure(figsize=(8.0, 5.5))
+    try:
+        ax_o = fig_ov.add_axes([0.10, 0.14, 0.80, 0.72])
+        gpd.GeoDataFrame(geometry=[box(0, 0, 100, 80)], crs="EPSG:32650").plot(ax=ax_o)
+        ax_o.set_xlim(0, 100)
+        ax_o.set_ylim(0, 80)
+        ax_o.text(0.05, 0.992, "N", transform=ax_o.transAxes, ha="center", va="bottom", fontsize=12, fontweight="bold")
+        ov_res = export_figure(fig_ov, tmp_path / "overflow_case", formats=("png",), map_panels=(MapPanel("main", ax_o, "EPSG:32650"),))
+        assert ov_res["layout_diagnostics"]["hygiene"]["frame_overflow_warning"] is True
+        assert "N" in ov_res["layout_diagnostics"]["hygiene"]["frame_overflow_texts"]
+    finally:
+        plt.close(fig_ov)
+

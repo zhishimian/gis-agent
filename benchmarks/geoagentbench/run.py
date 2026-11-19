@@ -191,7 +191,7 @@ def main():
     parser.add_argument('--budget-cny', type=float, default=50., help='New runs only; existing config budget is preserved')
     parser.add_argument('--no-evaluate', action='store_true', help='Additional scheduler joins a running batch; evaluate after the whole batch')
     parser.add_argument('--standalone', action='store_true', help='Use standalone .venv GeoPython without desktop QGIS')
-    parser.add_argument('--credential-reference', default='E:/vscode/bishe/1.py')
+    parser.add_argument('--credential-reference', default=os.environ.get('GIS_AGENT_CREDENTIAL_REF', ''))
     args = parser.parse_args()
     if args.budget_cny<=0 or not math.isfinite(args.budget_cny):
         parser.error('--budget-cny must be finite and positive')
