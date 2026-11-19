@@ -29,15 +29,24 @@ A script exiting with code 0 does not prove domain correctness. Run fast (`< 2s`
 - **Scale invariance**: test scaling inputs uniformly (`check_scale_invariance`) when working with DN vs reflectance or metres vs kilometres.
 - **Small-sample exact oracle**: check `N <= 20` sampled items using brute-force exact logic or an independent engine instead of duplicating the full pipeline.
 
-## Honest abstention and stagnation decision matrix
+## Honest abstention, collaborative clarification, and anti-over-refusal calibration
 
-Stop guessing when evidence fails to converge or prerequisites do not exist:
+Avoid both failure modes: silently stitching misleading proxies onto missing spatial/granularity prerequisites (**under-abstention**), or rejecting genuinely solvable tasks just because an auxiliary layer or unit conversion requires domain reasoning (**over-abstention**).
 
 | Observed condition | Target `finish_task` status | Required fields and rule |
 | --- | --- | --- |
-| All user goals verified; deliverables clean or anomalies confirmed | `completed` | `artifacts=[...]`, optional `acknowledged_anomalies` + `evidence` |
+| All user goals verified; valid physical derivation or minor auxiliary envelope clearly disclosed | `completed` | `artifacts=[...]`, disclose approximations cleanly in `summary`, optional `acknowledged_anomalies` + `evidence` |
 | Core branch completed reliably; blocked subset remains due to input/tool gap | `partial` | `artifacts=[...]`, `unresolved=[...]`, disclose limitations in `summary` |
-| Missing user policy/weight/threshold choice with material impact | `needs_input` | `reason="business_decision"` or `"missing_input"`, clear `question` + options |
-| Missing mandatory files/layers, impossible topology, or exhausted repair strategies | `blocked` | `reason="missing_input"` / `"data_quality"` / `"unsupported"` / `"capability_limit"`; allowed immediately after read-only inspection without dummy scripts |
+| Partial geographic coverage, coarse aggregate proxy for spatial patterns, or material policy fork | `needs_input` | **Preferred checkpoint before heavy scripts**: `reason="missing_input"` or `"business_decision"`, concise `question` stating local facts, core gap/bias, and 2 actionable options |
+| Mandatory subject layers completely absent with no valid entry point, or exhausted repair strategies | `blocked` | `reason="missing_input"` / `"data_quality"` / `"unsupported"` / `"capability_limit"`; allowed immediately after read-only inspection without dummy scripts |
 
-When `business["stagnation_alert"]` warns on repeated identical failures (`warn` or `escalate`), stop minor retries immediately: inspect inputs/schema with read-only probes, switch implementation route via the relevant domain Skill, or report `blocked` / `needs_input` with factual diagnosis.
+### Paired calibration contrasts (when to proceed vs ask/stop)
+
+- **Proceed + disclose (`completed`, DO NOT over-refuse)**:
+  - All primary hazard/road/forest layers exist and align metrics properly, while only a reference administrative border layer is absent -> derive an explicit envelope proxy from supplied layers, complete spatial analysis cleanly, and label it as a derived boundary on the map and in `summary`.
+  - A population-count raster (`people/pixel`) is supplied for a population-density threshold query (`> N people/km^2`) -> compute exact spherical/projected pixel area (`km^2`), derive density mathematically, cross-check total national population against known bounds, and deliver with unit-derivation notes.
+- **Pause before heavy scripts (`needs_input`, prefer clarification over silent proxy substitution)**:
+  - Continental flood-prone population mapping requested, yet catalog holds only one country's population raster plus a single short-duration flood event covering one corridor -> do NOT burn dozens of turns building contours over one partial corridor as if it covered the continent; pause after read-only inspection and ask whether the user will supply multi-country hazard data or wants a scoped single-country/single-event map.
+  - Sub-national/basin water-usage pattern visualization requested, yet catalog contains only annual national-level aggregate tables with no sub-national water geometry -> ask via `needs_input` whether the user prefers supplying basin/sectoral data or downgrading to country-level macro comparison.
+
+When `business["stagnation_alert"]` warns on repeated failures (including merged `:TIMEOUT` runs across renamed scripts) or `business["efficiency_hint"]` flags low-value tail polishing loops, stop minor retries immediately: benchmark `< 10s` on a small sample to switch to chunking/rasterization, finish cleanly once deliverables verify, or ask/stop via `needs_input` / `blocked`.

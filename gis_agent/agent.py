@@ -225,6 +225,8 @@ class Agent:
             business["runtime_capabilities"] = self.runtime_capabilities
         if alert := _stagnation_alert(self.store, self.messages[state["turn_start"] :]):
             business["stagnation_alert"] = alert
+        if spin := _spinning_alert(self.store, self.messages[state["turn_start"] :]):
+            business["efficiency_hint"] = spin
         latest = self.messages[business["latest_user_message"]]
         if latest.get("in_reply_to"):
             business["answer_to_request"] = latest["in_reply_to"]
@@ -336,6 +338,11 @@ class Agent:
                                 algorithms.append(item["algorithm_id"])
                                 item["tool_name"] = tool.name
                             state["algorithms"] = algorithms
+                        if isinstance(result, dict) and result.get("ok") is True and _has_spatial_anomalies(name, result):
+                            result = {
+                                **result,
+                                "verification_hint": "检测到空间异常信号；建议按需读取 gis-verification/SKILL.md 核对异常分诊、独立复算或披露确认规则。",
+                            }
                         if name == "finish_task" and result["ok"]:
                             result = self.accept_finish(result, state)
                         message["executions"][call["id"]] = "finished"
@@ -380,7 +387,12 @@ class Agent:
         if status == "answer" and state["execution_started"]:
             return {"ok": False, "error": "本轮已执行操作，请报告任务状态。"}
         if status == "completed" and self.plan.unfinished():
-            return {"ok": False, "error": "计划仍有未完成项，请继续处理或报告阻碍。", "unfinished": self.plan.unfinished()}
+            return {
+                "ok": False,
+                "error": "计划仍有未完成项，请继续处理或报告阻碍。",
+                "unfinished": self.plan.unfinished(),
+                "verification_hint": _FINISH_VERIFICATION_HINT,
+            }
         if status == "cancelled" and not any(
             message.get("cancelled_request") for message in self.messages[state["turn_start"] :]
         ):
@@ -403,12 +415,14 @@ class Agent:
                             "error": f"交付产物存在致命读取异常（{anom.get('code')}），请修复后再 completed，或改用 partial/blocked。",
                             "path": art,
                             "anomaly": anom,
+                            "verification_hint": _FINISH_VERIFICATION_HINT,
                         }
                 if norm in last_failed:
                     return {
                         "ok": False,
                         "error": "该交付产物关联的最近一次执行仍为失败状态；请重新运行成功并核验后再 completed，或改用 partial/blocked。",
                         "path": art,
+                        "verification_hint": _FINISH_VERIFICATION_HINT,
                     }
                 if norm not in verified_after and "ALL" not in ack:
                     for anom in anoms:
@@ -422,6 +436,7 @@ class Agent:
                         "请在 summary 中说明并在 acknowledged_anomalies 中传入对应编码后重试 finish_task，或改用 partial/blocked。"
                     ),
                     "anomalies": pending_l2,
+                    "verification_hint": _FINISH_VERIFICATION_HINT,
                 }
         state["outcome"] = result
         return result
@@ -442,6 +457,9 @@ class Agent:
 
 
 _EXC_RE = re.compile(r"\b([A-Za-z]+Error|Exception)\b")
+_CORE_DATA_EXTS = {".gpkg", ".shp", ".geojson", ".tif", ".tiff", ".nc", ".parquet", ".csv"}
+_POLISHING_WINDOW_TOOLS = {"edit_file", "run_python_script", "read_image", "read_file", "search_text"}
+_FINISH_VERIFICATION_HINT = "建议先读取 gis-verification/SKILL.md 核对独立复算、异常确认或诚实止损标准。"
 
 
 def _norm_path(raw: str) -> str:
@@ -477,6 +495,8 @@ def _turn_call_index(messages_slice: list[dict[str, Any]]) -> dict[str, tuple[st
 
 
 def _failure_signature(tool_name: str, args: dict[str, Any], payload: dict[str, Any]) -> str:
+    if payload.get("timed_out") is True or payload.get("status") == "timed_out":
+        return f"{tool_name}:TIMEOUT"
     target = ""
     if tool_name == "run_python_script":
         raw = args.get("script_path") or ""
@@ -510,20 +530,140 @@ def _stagnation_alert(store: SessionStore, messages_slice: list[dict[str, Any]])
     latest = signatures[0]
     repeated = sum(1 for sig in signatures if sig == latest)
     count = len(signatures)
+    is_timeout = latest.endswith(":TIMEOUT")
     if count >= 5:
+        advice = (
+            "连续执行失败已达上限；请勿继续微调同类重试，先读取 gis-verification/SKILL.md 核对止损边界，"
+            "立即切换全新底层方法或调用 finish_task(status='blocked'|'needs_input'|'partial') 诚实报告已知阻碍。"
+        )
         return {
             "level": "escalate",
             "consecutive_failures": count,
             "repeated_signature": latest,
-            "advice": "连续执行失败已达上限；请勿继续微调同类重试，立即切换全新底层方法或调用 finish_task(status='blocked'|'needs_input'|'partial') 诚实报告已知阻碍。",
+            "advice": advice,
         }
     if repeated >= 2 or count >= 3:
+        if is_timeout:
+            advice = (
+                "同一类超时连续出现；禁止继续对全量数据直接重试（即使更换脚本文件名）。"
+                "请先用 5% 样本或单瓦片做 <10s 基准测速定位复杂度瓶颈，再改用空间索引分块（Tile+Halo）或栅格化方案，"
+                "必要时读取 gis-verification/SKILL.md 或对应领域 Skill 切换方法。"
+            )
+        else:
+            advice = (
+                "同一错误连续出现；请停止盲目重跑，先用 inspect_data/summarize_fields 或极小样本探针核对输入与 Schema，"
+                "或读取 gis-verification/SKILL.md 及对应领域 Skill 参考文档切换路线。"
+            )
         return {
             "level": "warn",
             "consecutive_failures": count,
             "repeated_signature": latest,
-            "advice": "同一错误连续出现；请停止盲目重跑，先用 inspect_data/summarize_fields 或极小样本探针核对输入与 Schema，或读取对应 Skill 参考文档切换路线。",
+            "advice": advice,
         }
+    return None
+
+
+def _has_core_data_output(payload: dict[str, Any]) -> bool:
+    outputs = payload.get("outputs")
+    if not isinstance(outputs, list):
+        return False
+    for item in outputs:
+        if not isinstance(item, dict):
+            continue
+        raw_path = item.get("path")
+        if isinstance(raw_path, str) and Path(raw_path).suffix.lower() in _CORE_DATA_EXTS:
+            return True
+    return False
+
+
+def _has_spatial_anomalies(name: str, result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    outputs = result.get("outputs")
+    if isinstance(outputs, list) and any(isinstance(item, dict) and item.get("anomalies") for item in outputs):
+        return True
+    anomalies = result.get("anomalies")
+    if isinstance(anomalies, dict) and any(bool(vals) for vals in anomalies.values()):
+        return True
+    if isinstance(anomalies, list) and anomalies:
+        return True
+    if name == "inspect_data":
+        data = result.get("data")
+        if isinstance(data, dict):
+            if data.get("anomalies"):
+                return True
+            datasets = data.get("datasets")
+            if isinstance(datasets, list) and any(isinstance(ds, dict) and ds.get("anomalies") for ds in datasets):
+                return True
+    return False
+
+
+def _spinning_alert(store: SessionStore, messages_slice: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Detect repeated success-state script polishing or repetitive image review loops."""
+    calls = _turn_call_index(messages_slice)
+    entries: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for msg in messages_slice:
+        if msg.get("role") != "tool":
+            continue
+        call_id = str(msg.get("tool_call_id") or "")
+        name, args = calls.get(call_id, (str(msg.get("tool_name") or ""), {}))
+        payload = _safe_tool_payload(store, msg)
+        if isinstance(payload, dict):
+            entries.append((name, args, payload))
+    if not entries:
+        return None
+
+    target_script: str | None = None
+    target_name = ""
+    run_count = 0
+    trailing_edits: list[str] = []
+    for name, args, payload in reversed(entries):
+        if payload.get("ok") is not True or name not in _POLISHING_WINDOW_TOOLS:
+            break
+        if name == "run_python_script":
+            raw_script = str(args.get("script_path") or "")
+            if not raw_script or _has_core_data_output(payload):
+                break
+            norm_script = _norm_path(raw_script)
+            if target_script is None:
+                target_script = norm_script
+                target_name = Path(raw_script).name
+            elif norm_script != target_script:
+                break
+            run_count += 1
+        elif name == "edit_file":
+            raw_edit = str(args.get("path") or "")
+            if raw_edit:
+                trailing_edits.append(_norm_path(raw_edit))
+
+    if target_script is not None and run_count >= 4:
+        edit_count = sum(1 for edited in trailing_edits if edited == target_script)
+        if edit_count >= 3:
+            return {
+                "level": "hint",
+                "pattern": "repeated_script_polishing",
+                "script": target_name,
+                "consecutive_runs": run_count,
+                "advice": "已对同一脚本连续成功微调多轮且未产出新的上游空间数据文件；若核心数值与可读性已满足要求，请停止低收益样式微调，直接完成必要核查并交付。",
+            }
+
+    ok_image_reads = [
+        (idx, _norm_path(str(args.get("path") or "")))
+        for idx, (name, args, payload) in enumerate(entries)
+        if name == "read_image" and payload.get("ok") is True
+    ]
+    total_reads = len(ok_image_reads)
+    if total_reads >= 5:
+        recent_start = max(0, len(entries) - 8)
+        recent_paths = [path for idx, path in ok_image_reads if idx >= recent_start]
+        same_path_dup = any(recent_paths.count(path) >= 2 for path in recent_paths if path)
+        if len(recent_paths) >= 3 or same_path_dup:
+            return {
+                "level": "hint",
+                "pattern": "repeated_image_review",
+                "read_image_count": total_reads,
+                "advice": "本轮已多次重复检视图件；若核心内容准确且无明显遮挡错位，请停止继续微调版式白边，直接完成交付。",
+            }
     return None
 
 

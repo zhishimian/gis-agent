@@ -14,7 +14,7 @@ Pick the concrete driver, inspect actual layers and attributes before downstream
 2. **Large table pushdown**:
    - **Tier A (`pyogrio` / GeoPandas)**: Push spatial/attribute filters into the read call (`read_file(path, layer=..., bbox=..., where=..., columns=..., engine="pyogrio")`).
    - **Tier B (`duckdb` in `runtime_capabilities`)**: Use DuckDB `ST_Read()` or Parquet scans for multi-GB joins/aggregations before writing compact GPKG results.
-3. **Staging split**: Keep fast coupled steps in one script. Split at a stable costly boundary -> write self-contained closed `GPKG` / `GeoTIFF` / `NPY` / `JSON` -> always reopen outputs and verify schema/shape/finite values instead of assuming file existence implies validity.
+3. **Staging split & complexity gating**: Before launching full-dataset operations on large or dense inputs (`> 5,000` features or `> 10 MB`), validate logic and runtime on a tiny slice (`< 10s`) rather than risking blind full-scale timeouts. Split costly steps at a stable boundary -> write self-contained closed `GPKG` / `GeoTIFF` / `NPY` / `JSON` -> always reopen outputs and verify schema/shape/finite values instead of assuming file existence implies validity.
 
 ## Core Guardrails
 

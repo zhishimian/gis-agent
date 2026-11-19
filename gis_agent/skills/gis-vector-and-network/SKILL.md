@@ -12,7 +12,7 @@ Separate storage/analysis/delivery CRSs cleanly, keep spatial join multiplicitie
 
 1. **CRS separation**: `set_crs` edits labels; `to_crs` transforms coordinates. Measure distances, buffers, and areas in an appropriate local metric CRS (UTM/equal-area, avoiding Web Mercator area distortion), and reproject back only for explicit delivery requirements.
 2. **Geometry & keys**: Recurse through `Multi*` and `GeometryCollection` parts; keep explicit persisted business keys before overlay/clip/dissolve; rename colliding join columns and assert cardinality (`validate="many_to_one"`).
-3. **Predicate & chunking**: Choose `intersects` vs `within` vs `covered_by` consciously for boundary contacts. For giant polygon overlays, tile with Spatial Index + **Halo buffer**, clip results to unbuffered tiles, and deduplicate split features by business key.
+3. **Predicate, micro-benchmarking, & chunking**: Choose `intersects` vs `within` vs `covered_by` consciously for boundary contacts. When `inspect_data` reports `> 5,000` features or `> 10 MB` complex multi-part geometries, run a `< 10s` micro-benchmark on a small sample or single tile before executing global `buffer`, `unary_union`, or `overlay`; if superlinear growth appears, route immediately to Spatial Index + **Halo buffer** tiling (clip to unbuffered tiles and deduplicate split features by business key) or metric rasterization.
 
 ## Road Network Workflow
 

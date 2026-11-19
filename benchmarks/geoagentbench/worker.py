@@ -39,11 +39,15 @@ def execute(work, run):
     config = AppConfig.from_env(PROJECT)
     model = replace(config.model, base_url=url, model=model_name, max_tokens=spec['max_output_tokens'],
                     provider='deepseek', context_window=1048576, supports_images=True)
+    standalone = bool(spec.get('standalone')) or config.qgis is None
+    base_launcher = Path(sys.executable) if standalone else config.qgis.python_launcher
     wrapper = record / 'python-isolated.bat'
-    wrapper.write_text('@echo off\r\ncall "' + str(config.qgis.python_launcher) + '" -B "' +
+    wrapper.write_text('@echo off\r\ncall "' + str(base_launcher) + '" -B "' +
                        str(Path(__file__).with_name('child_entry.py')) + '" %*\r\n', encoding='utf-8')
     config = replace(config, model=model, session_root=record / 'sessions', output_root=work,
-                     memory=None, max_retries=0, qgis=replace(config.qgis, python_launcher=wrapper),
+                     memory=None, max_retries=0,
+                     qgis=None if standalone else replace(config.qgis, python_launcher=wrapper),
+                     python_executable=wrapper if standalone else None,
                      context=replace(config.context, request_token_limit=350000))
     for name in ('TEMP', 'TMP'):
         os.environ[name] = str(work / 'temp')
@@ -61,7 +65,8 @@ def execute(work, run):
                 http_client=DefaultHttpxClient(trust_env=False)) as client:
         del key
         def metered(messages, schemas, _transport_retry=True):
-            if len(rows) >= spec['max_calls'] or time.perf_counter() - started > spec['task_seconds']:
+            max_calls = spec.get('max_calls')
+            if (max_calls is not None and max_calls > 0 and len(rows) >= max_calls) or time.perf_counter() - started > spec['task_seconds']:
                 raise Protection('Task request count or elapsed-time protection')
             view, images = request_view(messages, model)
             input_upper = len(json.dumps({'messages': view, 'tools': schemas}, ensure_ascii=False).encode('utf-8')) + 16384 + 64 * len(messages) + images * 65536
@@ -95,8 +100,8 @@ def execute(work, run):
             event('model_response', number=number, tools=[x['function']['name'] for x in reply.message.get('tool_calls') or []], cost_cny=measured['estimated_cny'])
             return reply
 
-        qgis = QGISClient(config.qgis.process_launcher)
-        catalog = load_catalog(qgis)
+        qgis = None if standalone else QGISClient(config.qgis.process_launcher)
+        catalog = None if qgis is None else load_catalog(qgis)
         store = SessionStore(config.session_root, 'task')
         store.root.mkdir(parents=True, exist_ok=True)
         messages = store.read_record()

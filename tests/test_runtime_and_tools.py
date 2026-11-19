@@ -1217,3 +1217,19 @@ with rasterio.open({str(all_nan_tif)!r}, "w", driver="GTiff", height=4, width=4,
         assert run["ok"], run
         ras_item = next(item for item in run["outputs"] if Path(item["path"]).name == "empty_raster.tif")
         assert [a["code"] for a in ras_item["anomalies"]] == ["ALL_NODATA_RASTER"]
+
+
+def test_run_python_script_timeout_schema_and_bounds(tmp_path: Path) -> None:
+    """run_python_script 默认超时 120s、上限 600s，越界参数明确拒绝。"""
+    import sys
+    from gis_agent.tools.qgis_python import make_qgis_python_tools
+
+    launcher = Path(sys.executable)
+    tools = {t.name: t for t in make_qgis_python_tools(launcher, tmp_path / "logs")}
+    timeout_prop = tools["run_python_script"].parameters["properties"]["timeout_sec"]
+    assert timeout_prop["minimum"] == 5 and timeout_prop["maximum"] == 600
+    assert "默认120" in timeout_prop["description"]
+    script = tmp_path / "noop.py"
+    script.write_text("print('hi')\n", encoding="utf-8")
+    rejected = run_python_script(launcher, tmp_path / "logs", str(script), timeout_sec=601)
+    assert not rejected["ok"] and "600" in rejected["error"]

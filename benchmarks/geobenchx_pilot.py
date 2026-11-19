@@ -117,10 +117,12 @@ def run_worker_inprocess(work: Path, run_dir: Path) -> None:
         context_window=1048576,
         supports_images=True,
     )
+    standalone = bool(spec.get("standalone")) or config.qgis is None
+    base_launcher = HOST if standalone else config.qgis.python_launcher
     wrapper = record / "python-isolated.bat"
     child_entry = Path(__file__).resolve().parent / "geoagentbench" / "child_entry.py"
     wrapper.write_text(
-        '@echo off\r\ncall "' + str(config.qgis.python_launcher) + '" -B "' + str(child_entry) + '" %*\r\n',
+        '@echo off\r\ncall "' + str(base_launcher) + '" -B "' + str(child_entry) + '" %*\r\n',
         encoding="utf-8",
     )
     config = replace(
@@ -130,7 +132,8 @@ def run_worker_inprocess(work: Path, run_dir: Path) -> None:
         output_root=work,
         memory=None,
         max_retries=0,
-        qgis=replace(config.qgis, python_launcher=wrapper),
+        qgis=None if standalone else replace(config.qgis, python_launcher=wrapper),
+        python_executable=wrapper if standalone else None,
         context=replace(config.context, request_token_limit=350000),
     )
     for name in ("TEMP", "TMP"):
@@ -151,9 +154,9 @@ def run_worker_inprocess(work: Path, run_dir: Path) -> None:
     task_key = work.relative_to(run_dir).as_posix()
     rows = load(record / "usage.json") if (record / "usage.json").exists() else []
     started = time.perf_counter()
-    max_calls = 50
-    task_seconds = 900
-    task_budget_cny = 2.5
+    max_calls = spec.get("max_calls")
+    task_seconds = spec.get("task_seconds", 1800)
+    task_budget_cny = max(float(spec.get("task_budget_cny", 4.0)), 3.5)
 
     with OpenAI(
         api_key=key,
@@ -165,7 +168,7 @@ def run_worker_inprocess(work: Path, run_dir: Path) -> None:
         del key
 
         def metered(messages, schemas, _transport_retry=True):
-            if len(rows) >= max_calls or time.perf_counter() - started > task_seconds:
+            if (max_calls is not None and max_calls > 0 and len(rows) >= max_calls) or time.perf_counter() - started > task_seconds:
                 raise Protection("Task request count or elapsed-time protection")
             view, images = request_view(messages, model)
             input_upper = (
@@ -227,8 +230,8 @@ def run_worker_inprocess(work: Path, run_dir: Path) -> None:
             )
             return reply
 
-        qgis = QGISClient(config.qgis.process_launcher)
-        catalog = load_catalog(qgis)
+        qgis = None if standalone else QGISClient(config.qgis.process_launcher)
+        catalog = None if qgis is None else load_catalog(qgis)
         store = SessionStore(config.session_root, "task")
         store.root.mkdir(parents=True, exist_ok=True)
         messages = store.read_record()

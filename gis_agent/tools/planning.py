@@ -121,11 +121,12 @@ def make_planning_tools(plan: Plan, output_dir: Path | None = None) -> list[Tool
             name="finish_task",
             description=(
                 "报告本轮结束状态和面向用户的说明，必须单独调用。"
-                "completed 表示所需工作已完成，artifacts 列出实际非空文件或数据集目录；若交付产物触发空间告警信号，需先修复或经核实后在 acknowledged_anomalies 中确认。"
+                "completed 表示所需工作已完成，artifacts 列出实际非空文件或数据集目录；核心分析数据完整而仅缺次要辅助底图或需标准单位折算时，应直接完成并披露限制，避免误拒。"
+                "若交付产物触发空间告警信号，需先修复或经核实后在 acknowledged_anomalies 中确认。"
                 "unresolved只列影响用户要求成立的未完成或未知事项，存在时使用partial/blocked/needs_input。"
                 "正常数值近似、图层命名和格式说明写summary；实际执行失败需解决或如实停止。"
-                "needs_input以question提出必要问题并等待原Session补充；reason说明数据缺失/业务选择/质量/不支持/能力限制。"
-                "partial保留已有成果并列unresolved；blocked无法继续（可在仅完成只读探查确认缺失前提后零写入直接诚实上报）；用户取消由客户端处理。普通代码错误先自主修复。"
+                "needs_input是任务前/中期的联合决策与澄清检查点（而非失败收尾）：当首轮数据探测发现局部代理、粒度错配或关键业务口径分歧时，优先在编写重型脚本前调用needs_input，以question给出本地数据现状、核心缺口与供用户选择的选项，等待原Session无缝续跑；reason说明数据缺失/业务选择/质量/不支持/能力限制。"
+                "partial保留已有成果并列unresolved；blocked用于核心主体彻底缺失且无有效替代切入点（可在仅完成只读探查确认缺失前提后零写入直接诚实上报）；用户取消由客户端处理。普通代码错误先自主修复。"
                 "answer 用于普通问答，可先读取资料；本轮已写入或计算成果时报告任务状态。"
             ),
             parameters={
@@ -133,7 +134,7 @@ def make_planning_tools(plan: Plan, output_dir: Path | None = None) -> list[Tool
                 "properties": {
                     "status": {"type": "string", "enum": [s for s in FINISH_STATUSES if s != "cancelled"]},
                     "summary": {"type": "string", "description": "简短成果、实际核查范围和正常限制。"},
-                    "question": {"type": "string", "description": "needs_input必填：必要信息、影响和用户可提供的内容。"},
+                    "question": {"type": "string", "description": "needs_input必填：本地已核对事实、核心缺口/潜在偏差及供用户拍板的明确选项（如补充数据或确认局部替代口径）。"},
                     "reason": {"type": "string", "enum": ["missing_input", "business_decision", "data_quality", "unsupported", "capability_limit"]},
                     "artifacts": {"type": "array", "items": {"type": "string"}},
                     "unresolved": {"type": "array", "items": {"type": "string"}, "description": "尚未满足或无法确认的用户要求。非空时不能completed。"},

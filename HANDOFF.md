@@ -328,3 +328,22 @@ GABench原工作区有大量修改，保留原状。50个LFS指针的对象已�
    - `tests/`快速分层`-m "not slow and not live"`：**74 passed, 46 deselected**（`24.91s`）。
    - `tests/`全量离线`-k "not live"`：**119 passed, 1 deselected**（`170.32s`，含全部桌面 QGIS 集成与新增 V9.0.3 机制/Skill 单测）。
    - `benchmarks/geoagentbench/test_runner.py`：**10 passed**（`6.70s`，此前串联跑时第 162 行曾偶发一次既有 Windows `worker.lock` 竞争 `PermissionError`）。
+
+
+## V9.0.4 技能泛化、主动合议澄清、空转收敛与评测运行器 `.venv` 独立适配
+
+2026-11-19：基于 V9.0.3 组合 1（`.venv` 独立模式 15 题：9 题 GABench + 6 题 GeoBenchX 盲测，总峰值结算 `14.1748` 元）实测复盘，完成 V9.0.4 设计（`docs/v9.0.4-generalization-abstention-and-efficiency-design.md`）与代码实施（保持 `gis-cartography` 冻结，0 付费线上测试）：
+1. **事件驱动 `gis-verification` 触发与三分支主动合议**：
+   - `gis_agent/prompts/system.j2` 与 `gis_agent/tools/planning.py` 增设与 `gis-cartography` 对等的 `gis-verification` 调用引导，将首轮只读侦察后的路线明确为三分支（合法近似直接完成并披露、局部/粗粒度代理或口径分歧优先调 `needs_input` 发起带选项的合议澄清、主体彻底缺失再调 `blocked`）；`gis-verification/SKILL.md` 与 `metamorphic-and-abstention.md` 补充正反成对判例以防误拒。
+   - `gis_agent/agent.py` 新增 `_has_spatial_anomalies`，仅在工具返回空间异常或 `finish_task` 被计划/异常门控拦截时附带单行 `verification_hint`（常态零额外 token）。
+2. **空间 Skills 泛化与大几何复杂度门控**：
+   - `gis-raster-and-imagery/SKILL.md` 将加性常数指数表述抽象为通用物理量纲与标度核查原则；`gis-vector-and-network/SKILL.md` 与 `gis-data-io-and-staging/SKILL.md` 补充大要素/复杂多边形先做 `<10s` 小样本基准测速再切换 Tile+Halo 分块或栅格化的规则。
+3. **超时跨文件名归并与成功态原地空转感知**：
+   - `gis_agent/tools/qgis_python.py` 将 `run_python_script` 默认 `timeout_sec` 收紧至 `120s`（上限 `600s`）；`agent.py` 在 `_failure_signature` 中将 `timed_out=True`/`status=='timed_out'` 统一归并为 `<tool>:TIMEOUT`（解决切换脚本名连踩超时不触发告警的盲区）。
+   - `agent.py` 新增 `_spinning_alert`，检测同脚本连续 `>=4` 次纯样式微调或 `read_image >=5` 次重复审图并在末尾动态 `business["efficiency_hint"]` 中温和提示收敛（严格保持 KV Cache 前缀不变）。
+4. **评测运行器 `.venv` 独立模式与无轮次硬切刀对齐**：
+   - `benchmarks/geoagentbench/`（`common.py`、`child_entry.py`、`worker.py`、`run.py`）与 `benchmarks/geobenchx_pilot.py` 完善 `--standalone` 隔离沙箱（授权 `.venv` `sys.prefix` 与 `-c probe_current_python` 探针并剥离宿主机 `PROJ_LIB`/`GDAL_DATA`），同时移除 `max_calls=50/80` 硬轮次切刀（`max_calls=None`），改为 `task_budget_cny=4.0` 元峰值预算与墙钟护栏主导控制。
+5. **离线回归验证（`.venv` + 桌面 QGIS，最后一次源码编辑后）**：
+   - `tests/` 快速分层 `-m "not slow and not live"`：**78 passed, 46 deselected**（`34.04s`）。
+   - `tests/` 全量离线 `-k "not live"`：**123 passed, 1 deselected**（`180.83s`，含全部桌面 QGIS 集成与 V9.0.4 新增机制单测）。
+   - `benchmarks/geoagentbench/test_runner.py`：**11 passed**（`7.64s`）。

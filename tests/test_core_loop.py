@@ -1140,3 +1140,176 @@ def test_stagnation_alert_warn_and_escalate_in_business_tail(tmp_path: Path) -> 
     assert '"level":"warn"' in seen_business[2]
     assert '"level":"escalate"' in seen_business[5]
     assert "stagnation_alert" not in seen_business[6]
+
+
+def test_timeout_signature_merges_across_script_names(tmp_path: Path) -> None:
+    """不同脚本名连续超时应归并为统一 TIMEOUT 签名并触发采样/分块与 verification 指引。"""
+    store = SessionStore(tmp_path, "timeout_merge")
+    counter = make_token_counter(ModelConfig())
+    plan = Plan()
+    calls_made = 0
+
+    def run_stub(script_path: str = "calc.py") -> dict[str, Any]:
+        nonlocal calls_made
+        calls_made += 1
+        if calls_made <= 2:
+            return {"ok": False, "status": "timed_out", "timed_out": True, "error": "超过 120 秒"}
+        return {"ok": True, "status": "succeeded", "outputs": []}
+
+    tools = [*make_planning_tools(plan), Tool("run_python_script", "运行脚本", {"type": "object", "properties": {"script_path": {"type": "string"}}}, run_stub)]
+    reg = ToolRegistry()
+    for t in tools:
+        reg.register(t)
+
+    seen_business: list[str] = []
+    replies = iter([
+        reply("r1", "run_python_script", {"script_path": str(tmp_path / "02_a.py")}),
+        reply("r2", "run_python_script", {"script_path": str(tmp_path / "02_b.py")}),
+        reply("r3", "run_python_script", {"script_path": str(tmp_path / "03_tiled.py")}),
+        reply("ok", "finish_task", {"status": "completed", "summary": "已改用分块执行完成。"}),
+    ])
+
+    def capture_chat(messages: list[dict[str, Any]], schemas: list[dict[str, Any]]) -> ModelReply:
+        seen_business.append(messages[-1]["content"])
+        return next(replies)
+
+    agent = Agent(reg, tools, unexpected_model_call, plan, "测试", capture_chat, store, make_context(store, ContextConfig(), {t.name for t in tools}, counter))
+    out = agent.run([{"role": "user", "origin": "user", "content": "缓冲合并。"}])
+    assert out["status"] == "completed"
+    assert "stagnation_alert" not in seen_business[1]
+    assert '"repeated_signature":"run_python_script:TIMEOUT"' in seen_business[2]
+    assert "gis-verification/SKILL.md" in seen_business[2]
+    assert "stagnation_alert" not in seen_business[3]
+
+
+def test_spinning_alert_on_repeated_polishing_and_image_review(tmp_path: Path) -> None:
+    """连续同脚本微调或高频重复看图应在动态 business 中注入 efficiency_hint，且不影响常规阶段推进与 KV 前缀。"""
+    counter = make_token_counter(ModelConfig())
+    script_calc = str(tmp_path / "calc.py")
+    script_plot = str(tmp_path / "plot.py")
+    out_gpkg = str(tmp_path / "res.gpkg")
+    out_png = str(tmp_path / "map.png")
+
+    # 1) 正常多阶段（含产出核心 .gpkg）+ 4 次同脚本纯绘图微调后才触发 repeated_script_polishing
+    store1 = SessionStore(tmp_path / "s1", "spin_script")
+    plan1 = Plan()
+    tools1 = [
+        *make_planning_tools(plan1),
+        Tool("write_file", "写文件", {"type": "object", "properties": {"path": {"type": "string"}}}, lambda path="": {"ok": True}),
+        Tool("edit_file", "改文件", {"type": "object", "properties": {"path": {"type": "string"}}}, lambda path="": {"ok": True}),
+        Tool(
+            "run_python_script",
+            "跑脚本",
+            {"type": "object", "properties": {"script_path": {"type": "string"}}},
+            lambda script_path="": {"ok": True, "outputs": [{"path": out_gpkg if script_path == script_calc else out_png}]},
+        ),
+        Tool("read_image", "看图", {"type": "object", "properties": {"path": {"type": "string"}}}, lambda path="": {"ok": True, "path": path}),
+    ]
+    reg1 = ToolRegistry()
+    for t in tools1:
+        reg1.register(t)
+
+    seen_requests: list[list[dict[str, Any]]] = []
+    replies1 = iter([
+        reply("w1", "write_file", {"path": script_calc}),
+        reply("rc", "run_python_script", {"script_path": script_calc}),
+        reply("e1", "edit_file", {"path": script_plot}),
+        reply("rp1", "run_python_script", {"script_path": script_plot}),
+        reply("e2", "edit_file", {"path": script_plot}),
+        reply("rp2", "run_python_script", {"script_path": script_plot}),
+        reply("e3", "edit_file", {"path": script_plot}),
+        reply("rp3", "run_python_script", {"script_path": script_plot}),
+        reply("e4", "edit_file", {"path": script_plot}),
+        reply("rp4", "run_python_script", {"script_path": script_plot}),
+        reply("fin", "finish_task", {"status": "completed", "summary": "成图交付"}),
+    ])
+
+    def cap1(messages: list[dict[str, Any]], schemas: list[dict[str, Any]]) -> ModelReply:
+        seen_requests.append(messages)
+        return next(replies1)
+
+    agent1 = Agent(reg1, tools1, unexpected_model_call, plan1, "系统提示词", cap1, store1, make_context(store1, ContextConfig(), {t.name for t in tools1}, counter))
+    assert agent1.run([{"role": "user", "origin": "user", "content": "出图"}])["status"] == "completed"
+    # 前 9 次模型请求中均不应误报，第 10 次完成后（第 11 次请求即 seen_requests[-1]）注入 efficiency_hint 且前序前缀不变
+    assert all("efficiency_hint" not in req[-1]["content"] for req in seen_requests[:-1])
+    last_tail = seen_requests[-1][-1]["content"]
+    assert '"pattern":"repeated_script_polishing"' in last_tail and '"consecutive_runs":4' in last_tail
+    assert seen_requests[-1][: len(seen_requests[-2]) - 1] == seen_requests[-2][:-1]
+
+    # 2) 高频 read_image >= 5 次且最近重复看图触发 repeated_image_review
+    from PIL import Image
+    from gis_agent.tools.images import make_image_tool
+
+    real_png = tmp_path / "map.png"
+    Image.new("RGB", (8, 8), "red").save(real_png)
+    store2 = SessionStore(tmp_path / "s2", "spin_img")
+    plan2 = Plan()
+    tools2 = [
+        *make_planning_tools(plan2),
+        make_image_tool(tmp_path / "img_cache"),
+    ]
+    reg2 = ToolRegistry()
+    for t in tools2:
+        reg2.register(t)
+    tails2: list[str] = []
+    replies2 = iter([
+        reply("i1", "read_image", {"path": str(real_png)}),
+        reply("i2", "read_image", {"path": str(real_png)}),
+        reply("i3", "read_image", {"path": str(real_png)}),
+        reply("i4", "read_image", {"path": str(real_png)}),
+        reply("i5", "read_image", {"path": str(real_png)}),
+        reply("fin", "finish_task", {"status": "completed", "summary": "看图结束"}),
+    ])
+    agent2 = Agent(
+        reg2, tools2, unexpected_model_call, plan2, "系统提示词",
+        lambda msgs, _s: (tails2.append(msgs[-1]["content"]), next(replies2))[1],
+        store2, make_context(store2, ContextConfig(), {t.name for t in tools2}, counter),
+    )
+    assert agent2.run([{"role": "user", "origin": "user", "content": "审图"}])["status"] == "completed"
+    assert all("efficiency_hint" not in t for t in tails2[:-1])
+    assert '"pattern":"repeated_image_review"' in tails2[-1] and '"read_image_count":5' in tails2[-1]
+
+
+def test_verification_hint_attached_only_on_anomalies_or_finish_rejection(tmp_path: Path) -> None:
+    """常规成功无 verification_hint；空间异常或 finish_task 拦截时附带 gis-verification 指引。"""
+    store = SessionStore(tmp_path, "verif_hint")
+    counter = make_token_counter(ModelConfig())
+    plan = Plan()
+    clean_file = tmp_path / "clean.txt"
+    clean_file.write_text("ok", encoding="utf-8")
+
+    tools = [
+        *make_planning_tools(plan),
+        Tool("normal_tool", "普通工具", {"type": "object"}, lambda: {"ok": True, "outputs": [{"path": str(clean_file)}]}),
+        Tool(
+            "anom_tool",
+            "带异常告警",
+            {"type": "object"},
+            lambda: {"ok": True, "outputs": [{"path": str(clean_file), "anomalies": [{"level": "notice", "code": "UNSCALED_HIGH_DN"}]}]},
+        ),
+    ]
+    reg = ToolRegistry()
+    for t in tools:
+        reg.register(t)
+
+    replies = iter([
+        reply("p1", "update_plan", {"goal": "测试提示", "steps": [{"content": "待完成步骤", "status": "pending"}]}),
+        reply("n1", "normal_tool", {}),
+        reply("a1", "anom_tool", {}),
+        reply("f1", "finish_task", {"status": "completed", "summary": "提前交付", "artifacts": [str(clean_file)]}),
+        reply("p2", "update_plan", {"goal": "测试提示", "steps": [{"content": "待完成步骤", "status": "completed"}]}),
+        reply("f2", "finish_task", {"status": "completed", "summary": "确认完成", "artifacts": [str(clean_file)]}),
+    ])
+    agent = Agent(reg, tools, unexpected_model_call, plan, "测试", lambda *_: next(replies), store, make_context(store, ContextConfig(), {t.name for t in tools}, counter))
+    assert agent.run([{"role": "user", "origin": "user", "content": "运行核查"}])["status"] == "completed"
+
+    by_tool = {
+        m.get("tool_name"): json.loads(m["content"])
+        for m in store.load()
+        if m.get("role") == "tool"
+    }
+    assert "verification_hint" not in by_tool["normal_tool"]
+    assert "gis-verification/SKILL.md" in by_tool["anom_tool"]["verification_hint"]
+    finish_msgs = [json.loads(m["content"]) for m in store.load() if m.get("tool_name") == "finish_task"]
+    assert not finish_msgs[0]["ok"] and "gis-verification/SKILL.md" in finish_msgs[0]["verification_hint"]
+    assert finish_msgs[1]["ok"] and "verification_hint" not in finish_msgs[1]

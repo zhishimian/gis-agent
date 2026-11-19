@@ -1,4 +1,4 @@
-# GIS-Agent V9.0.3
+# GIS-Agent V9.0.4
 
 单 Agent GIS 助手。纯 Python 状态机（`AgentLoopRunner`）与标准库 SQLite 检查点（`SqliteCheckpointer`）管理模型与工具往返，核心运行时零 `langgraph` / `tokenizers` 依赖。支持独立 Python（`uv` 锁定环境）与 QGIS Processing / PyQGIS 双后端执行空间计算，Matplotlib、GeoPandas、Rasterio 负责静态制图。
 
@@ -38,9 +38,9 @@ python main.py
 ## 静态工具协议、运行能力注入与快速探针
 
 - **静态 Schema（KV Cache 友好）**：检索 `search_qgis_tools` 返回算法参数契约，执行统一走 `run_qgis_algorithm(algorithm_id, parameters, project_path)`，运行时动态校验必填键与未知参数，并在尾部动态状态注入缓存的 `runtime_capabilities`（`has_qgis` / `tier_b_available`）与连续失败退避信号 `stagnation_alert`。
-- **分层异常信号与非对称终结门控**：`inspect_fast` 为新空间产物按 `notice`/`warning`/`fatal` 三级挂载客观异常（如 `ZERO_FEATURES`、`MISSING_CRS`、`ALL_NODATA_RASTER`、`CORRUPT_OR_UNREADABLE`），`finish_task(status="completed")` 仅硬拦截致命损坏并允许对预期内告警通过 `acknowledged_anomalies` 或独立核查后放行；对 `blocked`/`needs_input` 零阻力放行诚实认错。
+- **分层异常信号、非对称门控与事件驱动校验**：`inspect_fast` 为新空间产物按 `notice`/`warning`/`fatal` 三级挂载客观异常（如 `ZERO_FEATURES`、`MISSING_CRS`、`ALL_NODATA_RASTER`、`CORRUPT_OR_UNREADABLE`）；仅当出现空间异常、连续失败/超时或结束门控拦截时附带 `verification_hint` 引导按需读取 `gis-verification`（常态零额外 token）；`finish_task` 明确区分“合法近似继续并披露 / 主动 `needs_input` 联合合议澄清 / 确定性 `blocked` 止损”，并在 `business` 尾部注入超时跨文件名归并告警与成功态原地空转收敛提示 `efficiency_hint`。
 - **快速探针与自动空间体征**：`inspect_data` 与 `run_python_script`/`run_qgis_algorithm` 自动为新产出文件附带轻量级客观体征 `outputs[].spatial` / `spatial_vitals`（CRS 单位、要素数/像元网格、`dtype`、`nodata`、`valid_ratio`、极值与无效几何抽样数），零额外模型轮次即可核对异常。
-- **执行器安全回执**：子进程超时整树回收（`taskkill /F /T`）、首尾双向保留错误堆栈、递归扫描子目录新增产物、写入目录边界拦截、`finish_task` 零字节产物拦截、Plain Python 隔离外部冲突 `PROJ_LIB`/`GDAL_DATA` 环境变量，以及 JSON 原子替换 Windows 瞬时句柄重试。
+- **执行器安全回执**：子进程超时整树回收（`taskkill /F /T`）、默认 `120s`（上限 `600s`）超时控制、首尾双向保留错误堆栈、递归扫描子目录新增产物、写入目录边界拦截、`finish_task` 零字节产物拦截、Plain Python 隔离外部冲突 `PROJ_LIB`/`GDAL_DATA` 环境变量，以及 JSON 原子替换 Windows 瞬时句柄重试。
 - `execution_history` 按需查当前 Session 的真实参数、脚本快照、结果和错误。历史 0 调用的 V8.1 `local_replay` 模块已归档至 `archive/v8_replay/`。
 
 ## 等待用户与继续

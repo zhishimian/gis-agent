@@ -32,14 +32,15 @@ def initialize(run, args):
     spec = {'created': now(), 'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=PROJECT, text=True).strip(),
             'source_hashes': frozen_sources(), 'model': model, 'base_url': url,
             'credential_reference': str(Path(args.credential_reference).resolve()),
-            'max_output_tokens': 16384, 'max_calls': 80, 'task_seconds': 1800,
-            'task_budget_cny': 3., 'budget_cny': args.budget_cny, 'workers': args.workers,
+            'max_output_tokens': 16384, 'max_calls': None, 'task_seconds': 1800,
+            'task_budget_cny': 4., 'budget_cny': args.budget_cny, 'workers': args.workers,
+            'standalone': bool(args.standalone),
             'pricing': {'verified': '2026-11-10', 'input_peak_per_million': 2, 'cached_peak_per_million': .2,
                         'output_peak_per_million': 8, 'peak_hours_beijing': '08:00-22:00',
                         'sources': ['https://help.aliyun.com/zh/model-studio/model-pricing',
                                     'https://help.aliyun.com/zh/model-studio/context-cache']},
             'memory': 'disabled; isolated tasks', 'sdk_retries': 0,
-            'extra_python_packages': 'not connected; original QGIS Python environment only',
+            'extra_python_packages': 'standalone uv .venv GeoPython (42 packages, no desktop QGIS)' if args.standalone else 'not connected; original QGIS Python environment only',
             'evaluation': 'outcomes first; no automatic tool-sequence or VLM correctness score'}
     save(run / 'config.json', spec)
     for relative in spec['source_hashes']:
@@ -189,6 +190,7 @@ def main():
     parser.add_argument('--workers', type=int, default=3)
     parser.add_argument('--budget-cny', type=float, default=50., help='New runs only; existing config budget is preserved')
     parser.add_argument('--no-evaluate', action='store_true', help='Additional scheduler joins a running batch; evaluate after the whole batch')
+    parser.add_argument('--standalone', action='store_true', help='Use standalone .venv GeoPython without desktop QGIS')
     parser.add_argument('--credential-reference', default='E:/vscode/bishe/1.py')
     args = parser.parse_args()
     if args.budget_cny<=0 or not math.isfinite(args.budget_cny):

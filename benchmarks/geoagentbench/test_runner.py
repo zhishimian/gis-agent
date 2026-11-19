@@ -161,3 +161,14 @@ w.locked_execute(work,work)
     processes=[subprocess.Popen([str(HOST),'-c',code,str(PROJECT),str(tmp_path)]) for _ in range(2)]
     assert [p.wait(timeout=30) for p in processes]==[0,0]
     assert (tmp_path/'started').read_text().splitlines()==['one']
+
+
+def test_initialize_removes_hard_call_limit_and_sets_budget_guard(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from benchmarks.geoagentbench import run
+    monkeypatch.setattr(run,'frozen_sources',lambda:{})
+    monkeypatch.setattr(run,'credentials',lambda _ref:('k','https://example.invalid','m'))
+    spec=run.initialize(tmp_path,SimpleNamespace(credential_reference='dummy.py',budget_cny=15.,workers=3,standalone=True))
+    assert spec['max_calls'] is None
+    assert spec['task_budget_cny']==pytest.approx(4.)
+    assert spec['standalone'] is True

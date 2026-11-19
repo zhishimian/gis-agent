@@ -10,7 +10,7 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parents[2]
 MATERIALS = PROJECT / 'outputs/benchmark_materials_20261109'
 SOURCE = PROJECT / 'timu暂存/gis-benchmarks/GABench'
-HOST = Path('D:/ac/envs/gis-agent/python.exe')
+HOST = PROJECT / '.venv/Scripts/python.exe' if (PROJECT / '.venv/Scripts/python.exe').is_file() else Path('D:/ac/envs/gis-agent/python.exe')
 TZ = timezone(timedelta(hours=8))
 
 
