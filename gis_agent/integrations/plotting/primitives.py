@@ -240,6 +240,8 @@ def get_scientific_cmap(
     n: int | None = None,
     reverse: bool = False,
     nodata_color: str | None = GEO_COLORS["nodata_gray"],
+    zero_anchored: bool = False,
+    zero_color: str = GEO_COLORS["zero_neutral"],
 ):
     """获取经过科学感知校正的 Colormap，禁用 jet/rainbow 并内置 Tier A 回退。"""
     kind_norm = kind.strip().lower()
@@ -298,6 +300,19 @@ def get_scientific_cmap(
     if want_reverse and cmap is not None and key not in QUALITATIVE_PALETTES:
         if hasattr(cmap, "reversed"):
             cmap = cmap.reversed()
+
+    if zero_anchored and kind_norm == "sequential" and key not in QUALITATIVE_PALETTES:
+        z_rgb = np.array(mcolors.to_rgb(zero_color), dtype=float)
+        c0_rgb = np.array(cmap(0.0)[:3], dtype=float)
+        mid_rgb = tuple(np.clip(0.5 * (z_rgb + c0_rgb), 0.0, 1.0))
+        sampled_stops: list[tuple[float, str]] = [
+            (0.0, mcolors.to_hex(z_rgb)),
+            (0.06, mcolors.to_hex(mid_rgb)),
+        ]
+        for u in np.linspace(0.0, 1.0, 12):
+            pos = 0.12 + 0.88 * float(u)
+            sampled_stops.append((pos, mcolors.to_hex(cmap(float(u))[:3])))
+        cmap = mcolors.LinearSegmentedColormap.from_list(f"{raw_name}_zero", sampled_stops, N=256)
 
     if n is not None:
         if n <= 0:
@@ -563,6 +578,162 @@ def _looks_geographic_crs(crs: Any, xlim: tuple[float, float], ylim: tuple[float
     return -180.5 <= xlim[0] <= xlim[1] <= 180.5 and -90.5 <= ylim[0] <= ylim[1] <= 90.5
 
 
+_GEO_STEPS_WIDE: tuple[float, ...] = (30.0, 20.0, 15.0, 10.0, 5.0, 2.0, 1.0)
+_GEO_STEPS_FINE: tuple[float, ...] = (
+    1.0, 0.5, 0.25, 1.0 / 6.0, 1.0 / 12.0, 1.0 / 30.0, 1.0 / 60.0,
+)
+
+
+def _choose_geo_step(span_deg: float) -> float:
+    span = abs(float(span_deg))
+    if not math.isfinite(span) or span <= 0.0:
+        return 1.0
+    pool = _GEO_STEPS_WIDE if span >= 2.5 else _GEO_STEPS_FINE
+    return min(
+        pool,
+        key=lambda s: (0 if 3.2 <= span / s <= 6.2 else 1, abs(span / s - 4.8)),
+    )
+
+
+def _parse_step_pair(step_val: float | tuple[float, float] | Sequence[float]) -> tuple[float, float]:
+    if isinstance(step_val, (tuple, list)):
+        sx, sy = float(step_val[0]), float(step_val[1])
+    else:
+        sx = sy = float(step_val)
+    if not (math.isfinite(sx) and math.isfinite(sy)) or sx <= 0.0 or sy <= 0.0:
+        raise ValueError("step_deg / step 必须为正数。")
+    return sx, sy
+
+
+def _projected_geo_ticks(
+    parsed_crs: Any,
+    xlim: tuple[float, float],
+    ylim: tuple[float, float],
+    *,
+    step_deg: float | tuple[float, float] | None = None,
+) -> tuple[list[float], list[float]] | None:
+    """在投影坐标轴上迭代反求整数经纬度（或整分）对应的投影刻度坐标。"""
+    try:
+        import pyproj
+
+        x0, x1 = sorted((float(xlim[0]), float(xlim[1])))
+        y0, y1 = sorted((float(ylim[0]), float(ylim[1])))
+        span_x, span_y = x1 - x0, y1 - y0
+        if not (math.isfinite(span_x) and math.isfinite(span_y)) or span_x <= 0.0 or span_y <= 0.0:
+            return None
+
+        inv = pyproj.Transformer.from_crs(parsed_crs, "EPSG:4326", always_xy=True)
+        fwd = pyproj.Transformer.from_crs("EPSG:4326", parsed_crs, always_xy=True)
+
+        x_mid = 0.5 * (x0 + x1)
+        y_mid = 0.5 * (y0 + y1)
+        lon_mid, lat_mid = inv.transform(x_mid, y_mid)
+        if not (math.isfinite(lon_mid) and math.isfinite(lat_mid)) or abs(lat_mid) >= 89.5:
+            return None
+
+        gx = np.linspace(x0, x1, 5)
+        gy = np.linspace(y0, y1, 5)
+        xx, yy = np.meshgrid(gx, gy)
+        lons_grid, lats_grid = inv.transform(xx.ravel(), yy.ravel())
+        lons_arr = np.asarray(lons_grid, dtype=float)
+        lats_arr = np.asarray(lats_grid, dtype=float)
+        valid = (
+            np.isfinite(lons_arr)
+            & np.isfinite(lats_arr)
+            & (lons_arr >= -180.0)
+            & (lons_arr <= 180.0)
+            & (lats_arr >= -90.0)
+            & (lats_arr <= 90.0)
+        )
+        if int(np.sum(valid)) < 5:
+            return None
+        lons_v = lons_arr[valid]
+        lats_v = lats_arr[valid]
+        if float(np.ptp(lons_v)) > 175.0:
+            return None
+
+        lon_min, lon_max = float(np.min(lons_v)), float(np.max(lons_v))
+        lat_min, lat_max = float(np.min(lats_v)), float(np.max(lats_v))
+        lon_span = lon_max - lon_min
+        lat_span = lat_max - lat_min
+        if not (1e-4 < lon_span < 175.0 and 1e-4 < lat_span < 170.0):
+            return None
+
+        if step_deg is not None:
+            dx_deg, dy_deg = _parse_step_pair(step_deg)
+        else:
+            dx_deg = _choose_geo_step(lon_span)
+            dy_deg = _choose_geo_step(lat_span)
+
+        k_lon0 = math.floor(lon_min / dx_deg) - 1
+        k_lon1 = math.ceil(lon_max / dx_deg) + 1
+        k_lat0 = math.floor(lat_min / dy_deg) - 1
+        k_lat1 = math.ceil(lat_max / dy_deg) + 1
+        if (k_lon1 - k_lon0) > 60 or (k_lat1 - k_lat0) > 60:
+            return None
+
+        h_x = max(1e-6, span_x * 1e-4)
+        h_y = max(1e-6, span_y * 1e-4)
+        x_lo, x_hi = x0 + 0.025 * span_x, x1 - 0.025 * span_x
+        y_lo, y_hi = y0 + 0.025 * span_y, y1 - 0.025 * span_y
+
+        xs: list[float] = []
+        for k in range(k_lon0, k_lon1 + 1):
+            target_lon = k * dx_deg
+            if not (-180.0 < target_lon < 180.0):
+                continue
+            x, _ = fwd.transform(target_lon, lat_mid)
+            if not math.isfinite(x):
+                continue
+            for _ in range(8):
+                lon_act, _ = inv.transform(x, y_mid)
+                if not math.isfinite(lon_act):
+                    break
+                if abs(target_lon - lon_act) < 1e-7:
+                    break
+                lon_2, _ = inv.transform(x + h_x, y_mid)
+                dlon_dx = (lon_2 - lon_act) / h_x
+                if not math.isfinite(dlon_dx) or abs(dlon_dx) < 1e-12:
+                    break
+                x += (target_lon - lon_act) / dlon_dx
+            lon_check, _ = inv.transform(x, y_mid)
+            if math.isfinite(x) and math.isfinite(lon_check) and abs(lon_check - target_lon) < 1e-3:
+                if x_lo < x < x_hi:
+                    xs.append(float(x))
+
+        ys: list[float] = []
+        for k in range(k_lat0, k_lat1 + 1):
+            target_lat = k * dy_deg
+            if not (-89.5 < target_lat < 89.5):
+                continue
+            _, y = fwd.transform(lon_mid, target_lat)
+            if not math.isfinite(y):
+                continue
+            for _ in range(8):
+                _, lat_act = inv.transform(x_mid, y)
+                if not math.isfinite(lat_act):
+                    break
+                if abs(target_lat - lat_act) < 1e-7:
+                    break
+                _, lat_2 = inv.transform(x_mid, y + h_y)
+                dlat_dy = (lat_2 - lat_act) / h_y
+                if not math.isfinite(dlat_dy) or abs(dlat_dy) < 1e-12:
+                    break
+                y += (target_lat - lat_act) / dlat_dy
+            _, lat_check = inv.transform(x_mid, y)
+            if math.isfinite(y) and math.isfinite(lat_check) and abs(lat_check - target_lat) < 1e-3:
+                if y_lo < y < y_hi:
+                    ys.append(float(y))
+
+        xs = sorted(set(xs))
+        ys = sorted(set(ys))
+        if len(xs) >= 2 and len(ys) >= 2:
+            return xs, ys
+    except Exception:
+        return None
+    return None
+
+
 def add_graticule_frame(
     ax: Axes,
     *,
@@ -570,6 +741,7 @@ def add_graticule_frame(
     style: str = "ticks_only",
     dms: bool = True,
     step: float | tuple[float, float] | None = None,
+    step_deg: float | tuple[float, float] | None = None,
     labelsize: float | None = None,
     color: str = GEO_COLORS["text_secondary"],
     grid_alpha: float = 0.38,
@@ -614,8 +786,9 @@ def add_graticule_frame(
             gl.bottom_labels = True
             gl.xlabel_style = {"size": tick_pt, "color": color}
             gl.ylabel_style = {"size": tick_pt, "color": color}
-            if step is not None:
-                sx, sy = step if isinstance(step, (tuple, list)) else (step, step)
+            eff_step = step_deg if step_deg is not None else step
+            if eff_step is not None:
+                sx, sy = _parse_step_pair(eff_step)
                 gl.xlocator = mticker.MultipleLocator(sx)
                 gl.ylocator = mticker.MultipleLocator(sy)
             return gl
@@ -634,9 +807,23 @@ def add_graticule_frame(
     ylim = ax.get_ylim()
     is_geog = _looks_geographic_crs(crs, xlim, ylim)
     if step is not None:
-        sx, sy = step if isinstance(step, (tuple, list)) else (step, step)
+        sx, sy = _parse_step_pair(step)
         ax.xaxis.set_major_locator(mticker.MultipleLocator(sx))
         ax.yaxis.set_major_locator(mticker.MultipleLocator(sy))
+    elif is_geog:
+        if step_deg is not None:
+            sx, sy = _parse_step_pair(step_deg)
+            ax.xaxis.set_major_locator(mticker.MultipleLocator(sx))
+            ax.yaxis.set_major_locator(mticker.MultipleLocator(sy))
+        else:
+            span_x = abs(float(xlim[1]) - float(xlim[0]))
+            span_y = abs(float(ylim[1]) - float(ylim[0]))
+            if span_x > 1e-4 and span_y > 1e-4:
+                ax.xaxis.set_major_locator(mticker.MultipleLocator(_choose_geo_step(span_x)))
+                ax.yaxis.set_major_locator(mticker.MultipleLocator(_choose_geo_step(span_y)))
+            else:
+                ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
+                ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
     else:
         ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
         ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
@@ -668,6 +855,11 @@ def add_graticule_frame(
                     ax.set_xlabel("")
                 if ax.get_ylabel() in {"Northing [metre]", "Northing [meter]"}:
                     ax.set_ylabel("")
+                if step is None or step_deg is not None:
+                    solved = _projected_geo_ticks(parsed, xlim, ylim, step_deg=step_deg)
+                    if solved is not None:
+                        ax.set_xticks(solved[0])
+                        ax.set_yticks(solved[1])
         except Exception:
             pass
 
@@ -1191,8 +1383,17 @@ def add_clean_legend(
     fontsize: float | None = None,
     title_fontsize: float | None = None,
     bbox_to_anchor: Any = None,
+    title_align: str = "center",
+    frame_facecolor: str = "#faf9f7",
+    frame_edgecolor: str = "#b8b4ac",
+    frame_lw: float = 0.7,
+    borderpad: float = 0.55,
+    labelspacing: float = 0.45,
 ):
-    """构建无遮挡紧凑图例，可选附加百分比占比与独立的 0 / NoData 隔离色块。"""
+    """构建无遮挡紧凑图例，可选附加单一数值或百分比、独立 0 / NoData 色块及居中加粗标题边框。"""
+    align_norm = title_align.strip().lower()
+    if align_norm not in {"left", "center", "right"}:
+        raise ValueError(f"不支持的 title_align '{title_align}'；可选 'left'、'center' 或 'right'。")
     item_pt = _resolve_pt(fontsize, "legend.fontsize", 10.0)
     hdr_pt = _resolve_pt(title_fontsize, "legend.title_fontsize", _snap_even(item_pt + 2.0, 12))
     handles: list[Any] = []
@@ -1246,18 +1447,22 @@ def add_clean_legend(
         bbox_to_anchor=bbox_to_anchor,
         handlelength=1.4,
         handleheight=0.95,
-        borderpad=0.35,
-        labelspacing=0.35,
+        borderpad=borderpad,
+        labelspacing=labelspacing,
         columnspacing=1.0,
     )
     if frameon and legend is not None:
         frame = legend.get_frame()
-        frame.set_facecolor("#ffffff")
+        frame.set_facecolor(frame_facecolor)
         frame.set_alpha(frame_alpha)
-        frame.set_edgecolor("#d0d0d0")
-        frame.set_linewidth(0.5)
+        frame.set_edgecolor(frame_edgecolor)
+        frame.set_linewidth(frame_lw)
     if legend is not None:
         legend.set_gid("legend")
+        if hasattr(legend, "set_alignment"):
+            legend.set_alignment(align_norm)
+        if hasattr(legend, "_legend_box") and legend._legend_box is not None:
+            legend._legend_box.align = align_norm
         if legend.get_title() is not None:
             legend.get_title().set_fontweight("bold")
     return legend

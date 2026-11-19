@@ -1158,3 +1158,117 @@ def test_v9053_fonts_compass_perceptual_norm_and_frame_overflow(tmp_path: Path) 
     finally:
         plt.close(fig_ov)
 
+
+def test_v9055_integer_graticules_zero_anchored_legend_and_font_priority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """V9.0.5.5 投影整数经纬求解、零值融合连续色带、居中线框图例与 font_style 优先级测试。"""
+    import importlib.util
+    if any(importlib.util.find_spec(m) is None for m in ("geopandas", "matplotlib", "pyproj", "shapely")):
+        pytest.skip("当前解释器缺少基础制图依赖。")
+
+    from matplotlib import colors as mcolors
+    import numpy as np
+
+    from gis_agent.config import configured_fonts
+    from gis_agent.integrations.plotting import (
+        GEO_COLORS,
+        MapPanel,
+        add_clean_legend,
+        add_continuous_colorbar,
+        add_graticule_frame,
+        apply_publication_theme,
+        configure_plotting,
+        export_figure,
+        get_scientific_cmap,
+    )
+
+    # 1. configured_fonts 默认不强塞 msyh.ttc；显式 font_style 优先于 GIS_AGENT_FONT_FILES
+    fonts_dir = ROOT / "gis_agent/integrations/plotting/fonts"
+    wk_font = (fonts_dir / "LXGWWenKaiLite-Regular.ttf").resolve()
+    monkeypatch.delenv("GIS_AGENT_FONT_FILES", raising=False)
+    assert configured_fonts(ROOT) == ()
+
+    monkeypatch.setenv("GIS_AGENT_FONT_FILES", str(wk_font))
+    env_cfg = configure_plotting()
+    assert env_cfg["fonts"] == [str(wk_font)]
+
+    explicit_cfg = configure_plotting(font_style="serif", svg_editable_text=True)
+    assert "Source Serif 4" in explicit_cfg["families"]
+    assert "Microsoft YaHei" not in explicit_cfg["families"]
+
+    import matplotlib.pyplot as plt
+    apply_publication_theme("light_geo", fig_width=9.0)
+
+    # 2. EPSG:5070 CONUS 默认整数经纬刻度（无分秒）
+    fig_us, ax_us = plt.subplots(figsize=(9.0, 5.5))
+    try:
+        ax_us.set_xlim(-2_450_000.0, 2_400_000.0)
+        ax_us.set_ylim(-450_000.0, 3_520_000.0)
+        ax_us.set_aspect("equal")
+        add_graticule_frame(ax_us, crs="EPSG:5070", style="ticks_only", dms=True)
+        fig_us.canvas.draw()
+        x_labs = [t.get_text() for t in ax_us.get_xticklabels() if t.get_text()]
+        y_labs = [t.get_text() for t in ax_us.get_yticklabels() if t.get_text()]
+        assert len(x_labs) >= 3 and len(y_labs) >= 4
+        assert all("°" in lab and "'" not in lab and '"' not in lab for lab in x_labs + y_labs), (x_labs, y_labs)
+    finally:
+        plt.close(fig_us)
+
+    # 3. EPSG:5880 Rondônia 指定 2° 整数经纬 + zero_anchored 连续色带 + 居中线框 Legend
+    cmap_za = get_scientific_cmap("sequential", "nordic_snow", zero_anchored=True)
+    assert mcolors.to_hex(cmap_za(0.0)).lower() == GEO_COLORS["zero_neutral"].lower()
+    assert mcolors.to_hex(cmap_za(1.0)).lower() == "#0c2338"
+
+    fig_br = plt.figure(figsize=(9.0, 6.2))
+    try:
+        ax_br = fig_br.add_axes([0.08, 0.14, 0.62, 0.78])
+        grid = np.linspace(0.0, 800.0, 30 * 30).reshape(30, 30)
+        im = ax_br.imshow(
+            grid,
+            extent=(3_500_000.0, 4_470_000.0, 8_350_000.0, 9_230_000.0),
+            origin="upper",
+            cmap=cmap_za,
+        )
+        ax_br.set_xlim(3_500_000.0, 4_470_000.0)
+        ax_br.set_ylim(8_350_000.0, 9_230_000.0)
+        ax_br.set_aspect("equal")
+        add_graticule_frame(ax_br, crs="EPSG:5880", style="ticks_only", dms=True, step_deg=(2, 2))
+        add_continuous_colorbar(
+            fig_br, im, bounds=[0.74, 0.58, 0.22, 0.16], orientation="horizontal",
+            label="Value (in)", ticks=[0, 200, 500, 800], zero_label=None,
+        )
+        ax_leg = fig_br.add_axes([0.74, 0.14, 0.22, 0.34])
+        ax_leg.set_axis_off()
+        leg = add_clean_legend(
+            ax_leg,
+            [
+                {"label": "Protected forest", "color": "#6f9b6b", "kind": "patch"},
+                {"label": "Deforested area", "color": "#cf8a3d", "kind": "patch"},
+                {"label": "Roads", "color": "#33383d", "kind": "line"},
+            ],
+            title="Legend", loc="center", frameon=True, frame_alpha=1.0, title_align="center",
+        )
+        assert leg is not None
+        assert leg.get_title().get_fontweight() in {"bold", 700}
+        assert leg._legend_box.align == "center"
+        assert mcolors.to_hex(leg.get_frame().get_facecolor()).lower() == "#faf9f7"
+        assert mcolors.to_hex(leg.get_frame().get_edgecolor()).lower() == "#b8b4ac"
+
+        fig_br.canvas.draw()
+        bx_labs = {t.get_text() for t in ax_br.get_xticklabels() if t.get_text()}
+        by_labs = {t.get_text() for t in ax_br.get_yticklabels() if t.get_text()}
+        assert {"66°W", "64°W", "62°W", "60°W"}.issubset(bx_labs), bx_labs
+        assert {"14°S", "12°S", "10°S", "8°S"}.issubset(by_labs), by_labs
+
+        res = export_figure(
+            fig_br, tmp_path / "v9055_out", formats=("png", "svg"),
+            map_panels=(MapPanel("rondonia", ax_br, "EPSG:5880"),),
+        )
+        hyg = res["layout_diagnostics"]["hygiene"]
+        assert hyg["duplicate_axis_ticks_warning"] is False
+        assert hyg["clipped_text_warning"] is False
+        assert hyg["frame_overflow_warning"] is False
+        assert res["warnings"] == []
+    finally:
+        plt.close(fig_br)
+
+

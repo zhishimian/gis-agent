@@ -98,18 +98,21 @@ def default_font_paths(font_style: str = "serif") -> list[Path]:
 def configure_plotting(
     font_files: list[str | Path] | None = None,
     *,
-    font_style: str = "serif",
+    font_style: str | None = None,
     svg_editable_text: bool = True,
 ) -> dict[str, Any]:
     matplotlib.use("Agg")
-    if font_files is None:
+    resolved_style = (font_style or "serif").strip().lower()
+    if font_files is not None:
+        paths = [Path(path).expanduser().resolve() for path in font_files]
+    elif font_style is not None:
+        paths = [path.expanduser().resolve() for path in default_font_paths(resolved_style)]
+    else:
         configured = os.environ.get("GIS_AGENT_FONT_FILES")
         if configured:
             paths = [Path(item).expanduser().resolve() for item in configured.split(";") if item.strip()]
         else:
-            paths = [path.expanduser().resolve() for path in default_font_paths(font_style)]
-    else:
-        paths = [Path(path).expanduser().resolve() for path in font_files]
+            paths = [path.expanduser().resolve() for path in default_font_paths(resolved_style)]
     for path in paths:
         if not path.is_file():
             raise FileNotFoundError(f"配置字体不存在：{path}")
@@ -125,7 +128,7 @@ def configure_plotting(
         "backend": matplotlib.get_backend(),
         "fonts": [str(path) for path in paths],
         "families": names,
-        "font_style": font_style.strip().lower(),
+        "font_style": resolved_style,
         "svg_editable_text": bool(svg_editable_text),
     }
 

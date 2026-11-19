@@ -25,9 +25,7 @@ def configured_bool(name: str, default: bool) -> bool:
 def configured_fonts(project: Path) -> tuple[Path, ...]:
     value = os.environ.get("GIS_AGENT_FONT_FILES")
     if value is None:
-        directory = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
-        paths = [directory / name for name in ("msyh.ttc", "arial.ttf")] if os.name == "nt" else []
-        return tuple(path.resolve() for path in paths if path.is_file())
+        return ()
     paths = [Path(item.strip()).expanduser() for item in value.split(";") if item.strip()]
     return tuple((path if path.is_absolute() else project / path).resolve() for path in paths)
 
