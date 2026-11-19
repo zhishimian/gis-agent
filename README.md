@@ -24,12 +24,12 @@
 OpenGIS-Agent autonomously plans visual hierarchy, projection selection, skewed perceptual normalization, layer z-ordering, and non-overlapping typography—delivering both **multi-panel scientific composites** and **clean study-area locator maps** as `300 dpi` PNGs alongside **editable `<text>` layered SVGs** for Illustrator / Inkscape / Figma refinement.
 
 ### 1. Publication Multi-Panel Scientific Composite
-*Asymmetric 62/38 GridSpec composite linking spatial snowfall surfaces (`nordic_snow` + `build_perceptual_norm`), Amtrak exposure tiers with broken-line-free national border z-ordering, continuous gradient legend, state rankings, and latitudinal exposure profiles (`6.51 MB` editable SVG).*
+*Asymmetric 62/38 GridSpec composite in bundled SIL OFL `Source Serif 4` print typography linking seamless `0–800 in` snowfall surfaces (`build_perceptual_norm`), Amtrak exposure tiers with broken-line-free national border z-ordering, integer graticules, state rankings, and latitudinal exposure profiles (`5.90 MB` editable SVG).*
 
 ![CONUS Seasonal Snowfall and Amtrak Winter Exposure Scientific Composite](assets/showcase_conus_scientific_composite.png)
 
 ### 2. Standard Study-Area Locator Map
-*Map-first research locator featuring uncolored-yet-bordered neighbor context, bundled SIL OFL `Source Serif 4` print typography, compact circular globe inset, bespoke compass star + lower-zone cartographic scalebar, and crisp 4-sided DMS coordinates (`8.14 MB` editable SVG).*
+*Map-first research locator featuring uncolored-yet-bordered neighbor context, bundled SIL OFL `Source Serif 4` print typography, compact circular globe inset, centered framed legend, bespoke compass star + lower-zone cartographic scalebar, and integer 4-sided graticules (`8.51 MB` editable SVG).*
 
 ![Rondônia Study Area Locator Map](assets/showcase_rondonia_study_area.png)
 
