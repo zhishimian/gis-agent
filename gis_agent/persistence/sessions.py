@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,6 +8,20 @@ from typing import Any
 from uuid import uuid4
 
 from gis_agent.persistence.json import json_text, text_preview, write_json
+
+
+SESSION_NAME = re.compile(r"[\w-]{1,80}")
+
+
+def folder_sessions(root: Path) -> list[str]:
+    records = []
+    for path in root.glob("*.json"):
+        if SESSION_NAME.fullmatch(path.stem) and path.is_file():
+            try:
+                records.append((path.stat().st_mtime_ns, path.stem))
+            except FileNotFoundError:
+                continue
+    return [name for _, name in sorted(records, reverse=True)]
 
 
 CONTROL_TOOLS = {"update_plan", "finish_task"}
@@ -64,9 +79,14 @@ class SessionStore:
     session_id: str
 
     def __post_init__(self) -> None:
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", self.session_id):
-            raise ValueError("Session ID 只允许 1 到 80 个英文字母、数字、下划线或横线。")
+        if not SESSION_NAME.fullmatch(self.session_id):
+            raise ValueError("Session ID 只允许 1 到 80 个文字、数字、下划线或横线。")
         self.root = self.root.resolve()
+        if len(self.session_id.encode("utf-8")) > 180:
+            raise ValueError("会话名过长，请缩短名称。")
+        reserved = re.fullmatch(r"CON|PRN|AUX|NUL|(?:COM|LPT)[1-9¹²³]", self.session_id, re.IGNORECASE)
+        if reserved and (os.name == "nt" or not self.path.is_file()):
+            raise ValueError("请选择可在不同系统使用的会话名，避开 CON 等系统保留名称。")
 
     @property
     def path(self) -> Path:
@@ -99,6 +119,11 @@ class SessionStore:
         messages = self.read_record()
         message_units(messages)
         return messages
+
+    def create(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        with self.path.open("x", encoding="utf-8") as file:
+            file.write("[]")
 
     def save(self, messages: list[dict[str, Any]]) -> None:
         write_json(self.path, messages)

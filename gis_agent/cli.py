@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import sys
 from typing import Annotated
 from uuid import uuid4
 
@@ -10,10 +11,9 @@ import typer
 
 from gis_agent.persistence.executions import ExecutionHistory
 from gis_agent.persistence.sessions import SessionStore
-from gis_agent.runtime.paths import default_project_dir
 
 
-app = typer.Typer(add_completion=False)
+app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
 
 def show_result(result: dict) -> None:
@@ -28,14 +28,25 @@ def show_result(result: dict) -> None:
 
 
 def chat(
-    project: Annotated[Path, typer.Option(help="项目目录，也是默认记录目录。")] = default_project_dir(),
+    project: Annotated[Path, typer.Option(help="项目目录，也是默认记录目录。")] = Path("."),
     session: Annotated[str | None, typer.Option(help="会话 ID；不填时交互输入。")] = None,
 ) -> None:
     from gis_agent.application import open_conversation
     from gis_agent.config import AppConfig
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
     config = AppConfig.from_env(project)
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        from gis_agent.adapters.terminal import run_terminal
+        from gis_agent.core.model import ModelError
+
+        try:
+            run_terminal(config, session)
+        except (ValueError, ModelError, OSError) as error:
+            typer.echo(str(error), err=True)
+            raise typer.Exit(1) from error
+        return
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     session_id = session or typer.prompt("Session（留空新建）", default="", show_default=False) or uuid4().hex
     with open_conversation(config, session_id) as conversation:
         typer.echo(f"Session: {session_id}\n输出目录: {conversation.output_dir}")
@@ -69,9 +80,10 @@ def chat(
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    project: Annotated[Path, typer.Option(help="项目目录。 ")] = default_project_dir(),
+    project: Annotated[Path, typer.Option("--project", "--folder", exists=True, file_okay=False, help="会话所属文件夹，默认为当前目录。")] = Path("."),
     session: Annotated[str | None, typer.Option(help="会话 ID。 ")] = None,
 ) -> None:
+    project = project.expanduser().resolve()
     ctx.obj = {"project": project, "session": session}
     if ctx.invoked_subcommand is None:
         chat(project, session)
