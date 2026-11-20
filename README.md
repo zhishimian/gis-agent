@@ -4,9 +4,10 @@
 
 **可验证的地理空间代码生成与出版级制图 Agent**
 
-[![Version](https://img.shields.io/badge/version-v9.0.6-1c60a6.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-v9.1.0-1c60a6.svg)](pyproject.toml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](pyproject.toml)
 [![QGIS & GeoPandas](https://img.shields.io/badge/backends-GeoPandas%20%7C%20Rasterio%20%7C%20PyQGIS-589632.svg)](gis_agent/skills/gis-data-io-and-staging/SKILL.md)
+[![Studio Desktop](https://img.shields.io/badge/Desktop-OpenGIS%20Studio%20v9.1-0ea5e9.svg)](scripts/build_desktop.ps1)
 [![MCP Ready](https://img.shields.io/badge/MCP-STDIO%20Server-0d585f.svg)](gis_agent/adapters/harness_mcp.py)
 
 **简体中文** | [English](README.en.md)
@@ -41,7 +42,20 @@ OpenGIS-Agent 摒弃臃肿的框架封装与上百个碎片化工具接口，采
 
 ## 🚀 快速开始
 
-### 安装并启动
+### 方式一：OpenGIS Studio 桌面工作台（推荐）
+
+面向希望开箱即用开展**地图画布联动 + 方案审批 + 成图圈注精修**的用户，支持两种零门槛使用方式：
+- **Windows 一键桌面安装包 / 绿色便携包**（无需预装 Python / Git / QGIS）：使用源码构建命令 `pwsh -File scripts/build_desktop.ps1` 可产出 `OpenGIS-Studio-9.1.0-x64-setup.exe`（NSIS 免管理员安装）与 `OpenGIS-Studio-9.1.0-x64-portable.zip`。
+- **同源本地浏览器工作台**（安装 `[cli,geo,studio]` 后直连同款界面）：
+
+```sh
+uv tool install --python 3.12 ".[cli,geo,studio]"
+opengis studio --folder "../城市分析"
+```
+
+Studio 内置离线可用 MapLibre 空间画布（大矢量视口抽稀、栅格 `WarpedVRT` 透明叠图、`Identify` 点查、手绘 AOI/点选 FID 绑定）、三档过程审批（`auto` / `plan_first` / `step_review`）、运行中随时「停止并纠偏」以及成图画廊红框圈注局部改图闭环。
+
+### 方式二：安装并启动命令行终端
 
 先安装 Git 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后在 Windows PowerShell 或 macOS 终端中运行以下命令安装全局 CLI 工具（或直接切入任意数据文件夹运行 `opengis`）：
 

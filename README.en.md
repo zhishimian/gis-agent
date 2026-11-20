@@ -4,9 +4,10 @@
 
 **A Verifiable Geospatial Coding & Publication-Grade Cartography Agent**
 
-[![Version](https://img.shields.io/badge/version-v9.0.6-1c60a6.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-v9.1.0-1c60a6.svg)](pyproject.toml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](pyproject.toml)
 [![QGIS & GeoPandas](https://img.shields.io/badge/backends-GeoPandas%20%7C%20Rasterio%20%7C%20PyQGIS-589632.svg)](gis_agent/skills/gis-data-io-and-staging/SKILL.md)
+[![Studio Desktop](https://img.shields.io/badge/Desktop-OpenGIS%20Studio%20v9.1-0ea5e9.svg)](scripts/build_desktop.ps1)
 [![MCP Ready](https://img.shields.io/badge/MCP-STDIO%20Server-0d585f.svg)](gis_agent/adapters/harness_mcp.py)
 
 [简体中文](README.md) | **English**
@@ -41,7 +42,20 @@ Rather than wrapping GIS software into hundreds of brittle JSON endpoints, OpenG
 
 ## 🚀 Quickstart
 
-### Install and launch
+### Option 1: OpenGIS Studio Desktop & Browser Workbench
+
+For interactive **map canvas inspection, plan/checkpoint approval, and figure red-box annotation loops**:
+- **Windows One-Click NSIS Installer & Portable Bundle** (zero Python / Git / QGIS prerequisites): run `pwsh -File scripts/build_desktop.ps1` to package `OpenGIS-Studio-9.1.0-x64-setup.exe` and `OpenGIS-Studio-9.1.0-x64-portable.zip`.
+- **Same-Origin Local Web Workbench** (via CLI):
+
+```sh
+uv tool install --python 3.12 ".[cli,geo,studio]"
+opengis studio --folder "../City analysis"
+```
+
+Studio features an offline-safe MapLibre canvas (viewport vector simplification, `WarpedVRT` raster overlays, spatial `Identify`, AOI / FID context chips), three execution policies (`auto` / `plan_first` / `step_review`), collaborative **Stop & Steer**, and a cartography figure workbench with side-by-side / swipe diffing and normalized bounding-box revision notes.
+
+### Option 2: Install and launch the CLI terminal
 
 Install Git and [uv](https://docs.astral.sh/uv/getting-started/installation/), then install the global CLI tool (`opengis`) in Windows PowerShell or a macOS terminal:
 

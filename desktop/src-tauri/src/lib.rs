@@ -148,6 +148,7 @@ fn spawn_backend() -> Result<BackendHandle, String> {
     let (python_exe, repo_root, project_dir) = resolve_python_executable()?;
     let mut cmd = Command::new(&python_exe);
     cmd.args([
+        "-s",
         "-m",
         "gis_agent.server.app",
         "--port",
@@ -159,6 +160,8 @@ fn spawn_backend() -> Result<BackendHandle, String> {
     ]);
     cmd.env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONNOUSERSITE", "1")
+        .env_remove("PYTHONPATH")
         .env_remove("PROJ_LIB")
         .env_remove("PROJ_DATA")
         .env_remove("GDAL_DATA")
