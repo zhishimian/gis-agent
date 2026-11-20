@@ -8,6 +8,30 @@ from gis_agent.tools.base import Tool
 
 
 FINISH_STATUSES = ("completed", "partial", "needs_input", "blocked", "cancelled", "answer")
+CHECKPOINT_KINDS = ("clarification", "plan_approval", "cartography_review", "parameter_tuning")
+
+
+def _validate_options(options: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]] | None, str | None]:
+    if options is None:
+        return None, None
+    if not isinstance(options, list) or not options:
+        return None, "options 必须是非空对象列表。"
+    cleaned: list[dict[str, Any]] = []
+    for item in options:
+        if not isinstance(item, dict):
+            return None, "options 中每项必须是对象。"
+        opt_id = item.get("id")
+        label = item.get("label")
+        if not isinstance(opt_id, str) or not opt_id.strip() or not isinstance(label, str) or not label.strip():
+            return None, "options 每项必须提供非空字符串 id 与 label。"
+        entry: dict[str, Any] = {"id": opt_id.strip(), "label": label.strip()}
+        desc = item.get("description")
+        if isinstance(desc, str) and desc.strip():
+            entry["description"] = desc.strip()
+        if item.get("recommended") is True:
+            entry["recommended"] = True
+        cleaned.append(entry)
+    return cleaned, None
 
 
 def finish_task(
@@ -19,6 +43,8 @@ def finish_task(
     reason: str | None = None,
     acknowledged_anomalies: list[str] | None = None,
     evidence: list[str] | None = None,
+    checkpoint_kind: str | None = None,
+    options: list[dict[str, Any]] | None = None,
     *,
     output_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -60,6 +86,14 @@ def finish_task(
         return {"ok": False, "error": "需要question说明缺少的必要信息、为什么需要及用户可以提供什么。"}
     if status == "partial" and not unresolved:
         return {"ok": False, "error": "partial需列尚未完成的unresolved；summary说明已完成部分，有文件成果时列artifacts。"}
+    if checkpoint_kind is not None:
+        if status != "needs_input" or checkpoint_kind not in CHECKPOINT_KINDS:
+            return {"ok": False, "error": "checkpoint_kind 仅用于 needs_input，且须为有效的检查点类型。"}
+    if options is not None and status != "needs_input":
+        return {"ok": False, "error": "options 仅用于 needs_input 检查点。"}
+    cleaned_options, opt_err = _validate_options(options)
+    if opt_err is not None:
+        return {"ok": False, "error": opt_err}
 
     result: dict[str, Any] = {
         "ok": True,
@@ -72,6 +106,10 @@ def finish_task(
         result["question"] = question.strip()
     if reason:
         result["reason"] = reason
+    if checkpoint_kind:
+        result["checkpoint_kind"] = checkpoint_kind
+    if cleaned_options:
+        result["options"] = cleaned_options
     if acknowledged_anomalies:
         result["acknowledged_anomalies"] = list(dict.fromkeys(item.strip() for item in acknowledged_anomalies if item.strip()))
     if evidence:
@@ -147,6 +185,26 @@ def make_planning_tools(plan: Plan, output_dir: Path | None = None) -> list[Tool
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "可选：简短客观取证结论或数据诊断摘要（如守恒差值、缺失图层名）。",
+                    },
+                    "checkpoint_kind": {
+                        "type": "string",
+                        "enum": list(CHECKPOINT_KINDS),
+                        "description": "needs_input可选类型：clarification / plan_approval / cartography_review / parameter_tuning。",
+                    },
+                    "options": {
+                        "type": "array",
+                        "description": "needs_input可选结构化选项卡片（每项含id、label，可选description、recommended）。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "label": {"type": "string"},
+                                "description": {"type": "string"},
+                                "recommended": {"type": "boolean"},
+                            },
+                            "required": ["id", "label"],
+                            "additionalProperties": False,
+                        },
                     },
                 },
                 "required": ["status", "summary"],

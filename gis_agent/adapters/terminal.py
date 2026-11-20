@@ -118,6 +118,11 @@ def result_view(console: Console, result: dict) -> None:
     console.print(Markdown(result["summary"], code_theme="ansi_dark"))
     if result.get("question") and result["question"] != result["summary"]:
         console.print(Text(result["question"], style="bold"))
+    for idx, option in enumerate(result.get("options") or (), 1):
+        if isinstance(option, dict) and option.get("label"):
+            rec = " [推荐]" if option.get("recommended") else ""
+            desc = f" — {option['description']}" if option.get("description") else ""
+            console.print(Text.assemble((f"  {idx}. ", ACCENT), f"{option['label']}{rec}", (desc, "dim")))
     for item in result.get("unresolved", []):
         console.print(Text.assemble(("  待处理  ", "dim"), item))
     for path in result.get("artifacts", []):

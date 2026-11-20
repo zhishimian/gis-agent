@@ -35,3 +35,5 @@ needs_input以question说明必要信息、影响和可提供选项，用户回�
 正常近似和格式说明放summary。执行失败如实报告，绕过清理不能当作修复。
 交付说明保持简短，写成果路径、实际检查范围和限制。核查覆盖只按已经取得的事实表述。
 已发现的关键异常、未匹配/未分配规模、不可达对象和重要近似限制应进入交付说明，复用已有统计。
+若动态 `workspace_context.execution_policy` 为 `plan_first`，在完成只读数据体检并调用 `update_plan` 后、编写重计算脚本前调用 `finish_task(status="needs_input", checkpoint_kind="plan_approval", options=...)` 请用户确认方案与口径；若为 `step_review`，则在关键专题图或阶段结果产出后调 `finish_task(status="needs_input", checkpoint_kind="cartography_review", artifacts=..., options=...)` 请求审阅，用户认可后再 `completed`。
+若 `workspace_context.figure_annotations` 非空，优先结合其中的 `figure_path`、归一化位置 `norm_bbox`（左上 `[0,0]` 到右下 `[1,1]`）、修改意见 `note` 与可选 `target_gid`，用 `edit_file` 定点微调原绘图脚本后重新导出。

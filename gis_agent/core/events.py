@@ -9,6 +9,9 @@ EventType = Literal[
     "tool_started",
     "tool_finished",
     "turn_finished",
+    "plan_updated",
+    "artifact_published",
+    "interaction_required",
 ]
 
 

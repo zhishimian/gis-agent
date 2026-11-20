@@ -352,6 +352,29 @@ class Agent:
                             tool=name, call_id=call["id"], ok=result.get("ok") if isinstance(result, dict) else True,
                             elapsed_ms=elapsed_ms, outputs=tool_outputs,
                         )
+                        if isinstance(result, dict) and result.get("ok") is True:
+                            if name == "update_plan" and isinstance(result.get("plan"), dict):
+                                emit_event(
+                                    self.on_event, "plan_updated", self.store.session_id,
+                                    goal=result["plan"].get("goal", ""),
+                                    steps=result["plan"].get("steps", []),
+                                )
+                            self._emit_published_artifacts(
+                                name, result,
+                                is_finish=(name == "finish_task"),
+                            )
+                            if name == "finish_task" and result.get("status") == "needs_input":
+                                emit_event(
+                                    self.on_event, "interaction_required", self.store.session_id,
+                                    request_id=identifier or f"q{len(self.messages)}",
+                                    checkpoint_kind=result.get("checkpoint_kind") or "clarification",
+                                    summary=result["summary"],
+                                    question=result.get("question", result["summary"]),
+                                    options=result.get("options", []),
+                                    reason=result.get("reason"),
+                                    artifacts=result.get("artifacts", []),
+                                    unresolved=result.get("unresolved", []),
+                                )
             if name in {"remember_memory", "forget_memory"}:
                 errors = set(state["memory_errors"])
                 if isinstance(result, dict) and result.get("ok"):
@@ -441,6 +464,58 @@ class Agent:
         state["outcome"] = result
         return result
 
+    def _emit_published_artifacts(self, source_tool: str, result: dict[str, Any], *, is_finish: bool = False) -> None:
+        if self.on_event is None:
+            return
+        seen: set[str] = set()
+        candidates: list[dict[str, Any]] = []
+        outputs = result.get("outputs")
+        if isinstance(outputs, list):
+            for item in outputs:
+                if isinstance(item, dict) and isinstance(item.get("path"), str):
+                    candidates.append(item)
+        elif isinstance(outputs, dict):
+            anom_map = result.get("anomalies") if isinstance(result.get("anomalies"), dict) else {}
+            for key, raw_path in outputs.items():
+                if isinstance(raw_path, str):
+                    candidates.append({"path": raw_path, "anomalies": anom_map.get(key)})
+        if is_finish:
+            for raw_path in result.get("artifacts") or ():
+                if isinstance(raw_path, str):
+                    candidates.append({"path": raw_path})
+
+        for item in candidates:
+            raw_path = str(item["path"])
+            norm = _norm_path(raw_path)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            clean_path = raw_path.split("|layername=", 1)[0]
+            file_path = Path(clean_path)
+            if not file_path.exists():
+                continue
+            kind = _classify_artifact_kind(clean_path)
+            size_bytes = int(item.get("bytes")) if isinstance(item.get("bytes"), int) else (file_path.stat().st_size if file_path.is_file() else 0)
+            if size_bytes == 0 and file_path.is_file():
+                continue
+            payload: dict[str, Any] = {
+                "path": str(file_path.resolve()),
+                "kind": kind,
+                "name": file_path.name,
+                "bytes": size_bytes,
+                "source_tool": source_tool,
+                "preview_ready": kind in {"vector", "raster", "figure", "html_map", "table", "script"},
+            }
+            if isinstance(item.get("spatial"), dict):
+                payload["spatial"] = item["spatial"]
+            if item.get("anomalies"):
+                payload["anomalies"] = item["anomalies"]
+            if kind == "figure":
+                diag = _read_sibling_manifest_diagnostics(file_path)
+                if diag is not None:
+                    payload["layout_diagnostics"] = diag
+            emit_event(self.on_event, "artifact_published", self.store.session_id, **payload)
+
     def finish(self, state: RunState) -> dict[str, Any]:
         outcome = dict(state["outcome"])
         self.messages.append({"role": "assistant", "content": outcome["summary"]})
@@ -460,6 +535,40 @@ _EXC_RE = re.compile(r"\b([A-Za-z]+Error|Exception)\b")
 _CORE_DATA_EXTS = {".gpkg", ".shp", ".geojson", ".tif", ".tiff", ".nc", ".parquet", ".csv"}
 _POLISHING_WINDOW_TOOLS = {"edit_file", "run_python_script", "read_image", "read_file", "search_text"}
 _FINISH_VERIFICATION_HINT = "建议先读取 gis-verification/SKILL.md 核对独立复算、异常确认或诚实止损标准。"
+
+_VECTOR_EXTS = {".gpkg", ".shp", ".geojson", ".fgb", ".kml"}
+_RASTER_EXTS = {".tif", ".tiff", ".img", ".vrt", ".asc"}
+_FIGURE_EXTS = {".png", ".svg", ".jpg", ".jpeg", ".pdf"}
+_TABLE_EXTS = {".csv", ".tsv", ".xlsx", ".parquet"}
+
+
+def _classify_artifact_kind(path: str) -> str:
+    ext = Path(path).suffix.lower()
+    if ext in _VECTOR_EXTS:
+        return "vector"
+    if ext in _RASTER_EXTS:
+        return "raster"
+    if ext in _FIGURE_EXTS:
+        return "figure"
+    if ext in _TABLE_EXTS:
+        return "table"
+    if ext in {".html", ".htm"}:
+        return "html_map"
+    if ext == ".py":
+        return "script"
+    return "other"
+
+
+def _read_sibling_manifest_diagnostics(figure_path: Path) -> dict[str, Any] | None:
+    manifest = figure_path.parent / "manifest.json"
+    if not manifest.is_file():
+        return None
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    diag = data.get("layout_diagnostics")
+    return diag if isinstance(diag, dict) else None
 
 
 def _norm_path(raw: str) -> str:

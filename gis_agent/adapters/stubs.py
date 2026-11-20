@@ -8,9 +8,11 @@
 """
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from gis_agent.core.events import AgentEvent
+
+ExecutionPolicy = Literal["auto", "plan_first", "step_review"]
 
 
 class FrontendBridge(Protocol):
@@ -25,6 +27,11 @@ class WorkspaceContext:
     selected_feature_ids: tuple[int | str, ...] = ()
     active_crs: str | None = None
     project_path: str | None = None
+    visible_layers: tuple[str, ...] = ()
+    clicked_point_wgs84: tuple[float, float] | None = None
+    drawn_geometry_geojson: dict[str, Any] | None = None
+    figure_annotations: tuple[dict[str, Any], ...] = ()
+    execution_policy: ExecutionPolicy = "auto"
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
@@ -38,4 +45,14 @@ class WorkspaceContext:
             payload["active_crs"] = self.active_crs
         if self.project_path:
             payload["project_path"] = self.project_path
+        if self.visible_layers:
+            payload["visible_layers"] = list(self.visible_layers)
+        if self.clicked_point_wgs84 is not None:
+            payload["clicked_point_wgs84"] = list(self.clicked_point_wgs84)
+        if self.drawn_geometry_geojson is not None:
+            payload["drawn_geometry_geojson"] = self.drawn_geometry_geojson
+        if self.figure_annotations:
+            payload["figure_annotations"] = list(self.figure_annotations)
+        if self.execution_policy != "auto":
+            payload["execution_policy"] = self.execution_policy
         return payload
