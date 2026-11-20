@@ -37,7 +37,7 @@ Never mix 6+ arbitrary fractional font sizes (e.g., `6.1 / 6.6 / 7.3 pt`) on gia
 
 ## 4. Task-dependent encoding rules
 
-For requested Fisher-Jenks classification, use [shared classification encoding](api.md#fisher-jenks); class labels, color counts, class counts and legend intervals must agree without silent log/quantile swaps.
+For requested Fisher-Jenks classification, use [shared classification encoding](classification-and-examples.md#fisher-jenks); class labels, color counts, class counts and legend intervals must agree without silent log/quantile swaps.
 
 | Situation | Decision and library controls | Check |
 | :--- | :--- | :--- |
@@ -45,6 +45,9 @@ For requested Fisher-Jenks classification, use [shared classification encoding](
 | Continuous field vs. classes | Default to `get_scientific_cmap(..., zero_anchored=True)` + `add_continuous_colorbar(..., zero_label=None)`; discrete `BoundaryNorm` swatches ONLY for `<= 5` explicit classes. | Seamless `0`-to-max bar; max 1 number per tier. |
 | Zero vs. missing vs. signed delta | Zero-anchored sequential cmap (seamless `0` on left) for magnitude; `TwoSlopeNorm` for anomalies; isolate `NoData` (`#d9d9d9`, hatch). | Zero (`#f7f7f7`) never merges with missing `NoData`. |
 | Surface + point overlay | Keep surface low-chroma; keep focal points compact with `edgecolor="white"` halos; mute auxiliary points. | Dense point clusters remain legible without blobbing. |
+| Multi-point-line / OD flow maps | Use `add_flow_arcs` (curved quadratic Bezier arcs sorted ascending, white halos, low-sat `#f7f6f4` polygon fills + neighbor/ocean context, scaled hub markers at `zorder > flow`, compact flow + size card via `add_size_legend(..., line_items=...)`). | Strongest corridors pop cleanly without line-spaghetti crossing centers or empty sidebar voids. |
+| Dense admin labels (> 25 units) | 2-tier hierarchy (`T3=12 pt` bold primary ink for major cities/prefectures, `T4=10 pt` regular secondary ink for counties, collision filter + `add_leader_callouts` in congested corridors); NEVER uniform `8 pt` labels. | Key hubs stay 100% legible without touching neighbor labels or sitting inside thick arcs; floor `>= 10 pt`. |
+| Regional / provincial geography | Include surrounding neighbor provinces/land/ocean (`#efeeea` / `#e8f1f8`) + 4-sided `add_graticule_frame(ax, crs=...)`; NEVER float a lone province polygon on bare white. | Province sits naturally in regional geography with integer DMS ticks. |
 | Callouts & chrome placement | Locate via `find_quiet_corner`; draw callouts via `add_leader_callouts` (halo-only, NO white `bbox` cards). | Zero overlap, zero pills covering thematic cells, zero clipping. |
 | Dense vectors (> 5,000 rows) | Never plot row-by-row (`itertuples`); simplify large polygon/line sets and use `rasterized=True` where needed. | Script runs `<= 15 s`, SVG `<= 8 MB`, leaving QA time. |
 

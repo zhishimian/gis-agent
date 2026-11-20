@@ -307,7 +307,7 @@ def _compute_cartography_hygiene_diagnostics(
                     subtitle_candidates.append(cand)
 
     # 2. 实心白底/带框标注检测
-    skip_gids = {"legend", "colorbar", "bivariate_legend"}
+    skip_gids = {"legend", "colorbar", "bivariate_legend", "size_legend"}
     check_axes = (
         [p.axes for p in map_panels if p.axes.get_visible()]
         if map_panels

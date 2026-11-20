@@ -92,10 +92,11 @@ def main(
 @app.command("chat")
 def chat_command(
     ctx: typer.Context,
-    project: Annotated[Path | None, typer.Option()] = None,
+    project: Annotated[Path | None, typer.Option("--project", "--folder", exists=True, file_okay=False, help="会话所属文件夹，默认为当前目录。")] = None,
     session: Annotated[str | None, typer.Option()] = None,
 ) -> None:
-    chat(project or ctx.obj["project"], session or ctx.obj["session"])
+    resolved = project.expanduser().resolve() if project is not None else ctx.obj["project"]
+    chat(resolved, session or ctx.obj["session"])
 
 
 @app.command()

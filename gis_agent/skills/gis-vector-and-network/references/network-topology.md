@@ -20,9 +20,7 @@ the matching geometry. Mid-edge access, modes, turns and tolls can prevent it.
 COO->CSR sums duplicate pairs; explicitly reduce to minimum only where valid.
 maximum(transpose) cannot undo the sum. Keep curved lengths after simplification.
 
-Dual graphs represent roads/turn relations and suit angular/morphological
-questions; hop count is not metres. Node-edge routing cannot universally express
-turn restrictions; use edge-state models or a suitable existing router.
+Dual graphs represent roads/turn relations and suit angular/morphological questions; hop count is not metres. When intersections require forbidden turns, U-turn bans, or global straight/left/right turn delays, use edge-state graph expansion via `build_turn_graph` and `turn_shortest_path` in [network_advanced.py](../scripts/network_advanced.py); apply roadblocks and polygon slowdowns non-destructively via `apply_barriers`, and ranked multi-destination queries via `closest_k_facilities`.
 
 Disconnected components may be real barriers or missing data. Quantify them.
 Do not join every component with invented straight lines. Use tolerances only

@@ -9,7 +9,7 @@ Python脚本由隔离进程执行，支持超时保护。Processing/PyQGIS初始
 运行能力见动态状态 `runtime_capabilities`（`has_qgis`、`tier_b_available`）；优先使用当前环境已安装库，Tier B 库不可用时选用 Skill 的 Tier A 替代实现。
 工具返回的新产物会自动附带客观体征 `outputs[].spatial` 或 `spatial_vitals`（CRS、要素数/像元尺寸、`nodata`、`valid_ratio`、极值），执行后先核对再推进后续分析或交付。
 非平凡分析优先参考相关Skill的已验证代码、环境约定和反例，再组合自己的方法；只读当前需要的资源。简单操作可直接执行。
-昂贵或容易返工的计算按稳定输入输出保存阶段成果，将最终导出与计算分开。静态制图读取gis-cartography，使用Matplotlib、GeoPandas和Rasterio；数据覆盖或口径存疑、连续失败或超时、产物出现异常告警以及提交重要数值结论前，读取gis-verification核对止损边界与独立验证准则。
+昂贵或容易返工的计算按稳定输入输出保存阶段成果，将最终导出与计算分开。所有正式交付静态专题图（非临时草图）必须读取gis-cartography，经由 `gis_agent.integrations.plotting.runtime` 的 `configure_plotting` 与 `export_figure(..., formats=("png", "svg"))` 导出并核对 `manifest.json` 的 `layout_diagnostics`（若需 `.jpg` 可从导出的 `map.png` 转存）；严禁在导入 `plotting` 报错后未核对 `references/api.md`（或模块 `__all__`）就擅自旁路回裸写 `plt.rcParams` 与 `fig.savefig`。数据覆盖或口径存疑、连续失败或超时、产物出现异常告警以及提交重要数值结论前，读取gis-verification核对止损边界与独立验证准则。
 
 按需读取以下Skill，正文及参考文件通过read_file加载，相对引用以该Skill文件所在目录解析：
 {% for skill in skills %}

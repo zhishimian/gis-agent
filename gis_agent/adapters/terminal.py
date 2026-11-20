@@ -162,20 +162,26 @@ def run_terminal(config: AppConfig, session: str | None) -> None:
         key = prompt_key(console, config, credentials)
     while True:
         store = SessionStore(config.session_root, session)
-        conversation = None
+        conversation: Conversation | None = None
         with ExitStack() as resources:
-            if key:
-                conversation = resources.enter_context(open_conversation(
-                    config, session, api_key=key, on_event=activity.event,
-                ))
-                if conversation.pending:
-                    result_view(console, activity.run(conversation, conversation.resume))
-                elif conversation.pending_answer:
-                    result_view(console, activity.run(conversation, conversation.continue_answer))
-                elif conversation.waiting:
-                    result_view(console, conversation.waiting)
-                elif conversation.messages:
-                    last = conversation.messages[-1]
+            def ensure_conversation() -> Conversation:
+                nonlocal conversation
+                if conversation is None:
+                    conversation = resources.enter_context(open_conversation(
+                        config, session, api_key=key, on_event=activity.event,
+                    ))
+                return conversation
+
+            if key and store.path.is_file():
+                active = ensure_conversation()
+                if active.pending:
+                    result_view(console, activity.run(active, active.resume))
+                elif active.pending_answer:
+                    result_view(console, activity.run(active, active.continue_answer))
+                elif active.waiting:
+                    result_view(console, active.waiting)
+                elif active.messages:
+                    last = active.messages[-1]
                     if last["role"] == "assistant" and last.get("content"):
                         console.print("上次回复", style="dim")
                         console.print(Markdown(last["content"]))
@@ -250,13 +256,15 @@ def run_terminal(config: AppConfig, session: str | None) -> None:
                         break
                 elif text in {"/cancel", "cancel"}:
                     if waiting:
+                        assert conversation is not None
                         result_view(console, conversation.cancel())
                     else:
                         console.print("当前没有等待补充的任务。", style="dim")
-                elif not conversation:
+                elif not key:
                     console.print(Text.assemble(("  /key", ACCENT), " 连接模型后即可发送任务。"))
                 else:
                     try:
-                        result_view(console, activity.run(conversation, lambda: conversation.send(text)))
+                        active = ensure_conversation()
+                        result_view(console, activity.run(active, lambda: active.send(text)))
                     except (ValueError, ModelError, OSError) as error:
                         console.print(Text(str(error), style=ACCENT))
