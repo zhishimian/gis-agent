@@ -334,6 +334,7 @@ def open_conversation(
             saver,
             render_prompt(
                 "system.j2",
+                project=config.project,
                 output_dir=output_dir,
                 supports_images=config.model.supports_images,
                 supports_memory=memory is not None,

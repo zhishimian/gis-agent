@@ -17,6 +17,58 @@
 
 ---
 
+Run `opengis` in a data folder to inspect layers, analyze spatial data, and draw maps using natural language. Each folder keeps its own sessions and outputs.
+
+![OpenGIS terminal with the pixel globe and sessions grouped under a workspace folder](assets/opengis-terminal.png)
+
+## 🚀 Quickstart
+
+### Install and launch
+
+Install Git and [uv](https://docs.astral.sh/uv/getting-started/installation/), then run these commands in Windows PowerShell or a macOS terminal.
+
+```sh
+git clone https://github.com/zhishimian/OpenGIS-Agent.git
+cd OpenGIS-Agent
+uv tool install --python 3.12 ".[cli,geo]"
+uv tool update-shell
+```
+
+Reopen your terminal, go to your data folder, and run `opengis`. On first launch, the terminal displays the model and API host and prompts for a masked API key. The default provider is DeepSeek. Press Enter to skip and use `/key` to connect later.
+
+Keys are scoped to the provider and endpoint and stored in macOS Keychain, Windows Credential Manager, or Linux Secret Service. Other folders can reuse the same credentials. If the system store is unavailable, the key lasts for the current process. Automation can also read credentials from environment variables or a workspace `.env` file.
+
+### Try a task
+
+Type this at the `❯` prompt to try the agent without any data files.
+
+> Calculate the great-circle distance from Shanghai (31.23° N, 121.47° E) to Beijing (39.90° N, 116.40° E). Give the answer in kilometers.
+
+For your own data, use paths relative to the workspace. For example, ask the agent to read `schools.geojson`, report its CRS and feature count, label each point by its `name` field, and export a PNG map.
+
+### Manage workspaces and sessions
+
+| Where | Command | Purpose |
+| --- | --- | --- |
+| Terminal | `opengis --folder "../City analysis"` | Open a specific data folder |
+| Agent | `/new schools` | Create a named session in this folder |
+| Agent | `/resume` or `/resume schools` | List this folder’s sessions or continue one by name |
+| Agent | `/status` | Show the model, workspace path, and output directory |
+| Agent | `/help`, `/exit` | List shortcuts or exit |
+
+Sessions default to `sessions/` and results to `outputs/<session>/` inside the workspace. Different folders can reuse the same session name.
+
+### Develop from source
+
+```sh
+uv sync --extra cli --extra geo --extra dev
+uv run --no-sync opengis
+```
+
+External clients can launch `gis-agent-mcp` as a STDIO MCP server. From the checkout, use `uv run --no-sync gis-agent-mcp`.
+
+---
+
 ## 🎨 Cartography Showcase
 
 OpenGIS-Agent autonomously plans map projections, perceptual color ramps, layer z-ordering, and publication typography—delivering `300 dpi` figures alongside **editable `<text>` layered SVGs** ready for Illustrator / Inkscape / Figma refinement.
@@ -36,40 +88,6 @@ OpenGIS-Agent autonomously plans map projections, perceptual color ramps, layer 
 ## ✨ Architecture
 
 Rather than wrapping GIS software into hundreds of brittle JSON endpoints, OpenGIS-Agent runs a lightweight pure-Python state machine (`AgentLoopRunner` + SQLite checkpointing) with `9` KV-cache-friendly static tool schemas and `7` modular geospatial Skills (`gis_agent/skills/`). Every newly generated vector or raster artifact triggers zero-turn objective inspection (`inspect_fast` for CRS, NoData, and empty-geometry triage), executes seamlessly across standalone `uv` geospatial libraries (`GeoPandas`, `Rasterio`, `SciPy`, `Cartopy`) or optional desktop `PyQGIS`, and composes publication maps backed by automated layout and typography hygiene checks (`gis_agent/integrations/plotting/`).
-
----
-
-## 🚀 Quickstart
-
-### 1. Install with `uv`
-
-```powershell
-# Minimal core + CLI + test runner
-uv sync --extra cli --extra dev
-
-# Standalone full geospatial analysis & publication cartography stack (no desktop QGIS required)
-uv sync --extra cli --extra dev --extra geo
-```
-
-### 2. Configure `.env`
-
-Create `.env` in the repository root:
-
-```env
-DEEPSEEK_API_KEY=your_api_key_here
-# Optional: enable desktop QGIS / PyQGIS processing algorithms
-# GIS_AGENT_QGIS_DIR=E:/exe/qgis
-```
-
-### 3. Run OpenGIS-Agent
-
-```powershell
-# Interactive CLI (supports session resume, status inspection & history audit)
-uv run python main.py --session my-gis-task
-
-# Standard STDIO MCP Server (for Claude Code / Codex / Cursor / Antigravity)
-uv run gis-agent-mcp
-```
 
 ---
 

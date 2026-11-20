@@ -19,6 +19,9 @@ dependencies = [
 [project.optional-dependencies]
 cli = [
     "typer>=0.12",
+    "keyring>=25.5",
+    "prompt-toolkit>=3.0.43",
+    "rich>=13.7",
 ]
 vision = [
     "pillow>=10.0",
@@ -55,6 +58,7 @@ dev = [
 ]
 
 [project.scripts]
+opengis = "gis_agent.adapters.cli:app"
 gis-agent = "gis_agent.adapters.cli:app"
 gis-agent-mcp = "gis_agent.adapters.harness_mcp:main"
 
