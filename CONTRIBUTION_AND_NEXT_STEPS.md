@@ -1,143 +1,116 @@
-# 路线图、架构演进与贡献指南 (`CONTRIBUTION_AND_NEXT_STEPS.md`)
+# 项目路线图与贡献指南 (`CONTRIBUTION_AND_NEXT_STEPS.md`)
 
-欢迎参与 **OpenGIS-Agent** 的开源共建！无论你擅长空间分析算法、科研与竞赛专题制图、前端可视化（React / MapLibre）、桌面插件开发（PyQGIS / ArcGIS Pro / Tauri），还是 AI Agent 评测基准构建，这份文档都会向你清晰交代：**我们现在做到了哪一步、底层架构是怎么分工的、接下来最需要攻克的四大主攻方向，以及如何在本地配置环境并跑通开发构建。**
-
----
-
-## 一、当前架构底座与技术栈全景（`v9.1` 现状）
-
-OpenGIS-Agent 的核心设计哲学是 **“一核三环、多端同源”**——把大模型推理编排、确定性地理空间计算和人机交互界面彻底解耦，确保核心能力只需沉淀一次，就能在多种交付形态下复用：
-
-1. **Ring 1｜确定性地理原语与领域知识包（纯 Python，零状态机 / 零 UI 依赖）**
-   - `gis_agent/runtime/`：统一包路径定位（`paths.py`）、带进程树回收的隔离脚本执行器（`runner.py`）、新建矢量/栅格零轮次客观体检探针（`inspect_fast.py`，自动提取 CRS、要素数、像元量纲、NoData 与空几何告警）。
-   - `gis_agent/integrations/`：可组合出版级制图原语（`plotting/primitives.py`：含多点线流贝塞尔弧线 `add_flow_arcs`、双节矢量比例图例 `add_size_legend`、经纬网、指北针与比例尺）、自动化 5 项版面卫生与字号层级诊断（`plotting/runtime.py`）、随仓开源印刷字体（`Source Serif 4` 与 `LXGW WenKai Lite`）以及可选桌面 `qgis_process` 客户端。
-   - `gis_agent/skills/`：7 套全英文、渐进式披露的模块化地理空间技能包（含 `v9.0.6` 零新依赖网络分析四件套：Trimmed-TIN 等值服务区面、`scipy.optimize.milp` 工业级设施选址与 Huff 引力模型、点/线/面障碍与 Top-K 最近设施、边状态图转弯限制与延误）。
-2. **Ring 2｜无头会话引擎与人机协议（纯 Python 状态机，零 GUI 框架依赖）**
-   - `gis_agent/core/` & `gis_agent/persistence/`：轻量确定性状态机（`AgentLoopRunner` + SQLite 检查点 `SqliteCheckpointer`）、90% 高水位上下文摘要压缩（`ContextManager`）、跨会话长期记忆（`MemoryStore`）、原子配对消息存储（`SessionStore`）与回执追溯（`ExecutionHistory`）。
-   - **9 个静态工具协议**：始终保持工具 Schema 前缀稳定，实测将多轮长任务的大模型 Prompt KV-Cache 命中率维持在 **95.7%～97.3%**。
-   - **人机协作契约**：通过 `EventCallback`（含 `plan_updated`、`artifact_published`、`interaction_required`）、`WorkspaceContext`（空间上下文与图上批注回传）与 `Conversation.request_stop()`（0.2 秒协作式中止子进程树并保持会话原子闭合）对外暴露标准接口。
-3. **Ring 3｜本地空间引擎服务与多端交互壳层**
-   - **本地空间后端（`gis_agent/server/`，Python FastAPI + Uvicorn + SSE）**：仅绑定 `127.0.0.1` 回环地址并启用 `X-OpenGIS-Token` 鉴权与路径沙箱；提供大矢量视口裁剪与 Douglas-Peucker 自适应抽稀、栅格 `WarpedVRT` 动态透明 PNG 渲染、矢量+栅格同点 `Identify` 物理值查询、分页属性表与统计断点，以及成图版本与 SVG 语义 `<g id>` 图层解析。
-   - **前端工作台（`frontend/`，React 19 + TypeScript + Tailwind CSS + Zustand + MapLibre GL JS）**：负责双栏人机交互、地图画布联动、三档过程审批卡片与成图红框批注精修。
-   - **原生桌面壳（`desktop/`，Tauri v2 / Rust `< 300` 行）**：仅负责拉起并守护随包便携 Python Sidecar 进程、绑定 Windows Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 确保主窗口关闭时零残留后台 Python 进程）、提供系统原生文件夹选择与真实绝对路径文件拖放。**99% 的界面与业务逻辑均在 TypeScript/React 与 Python 中完成，无需手写复杂 Rust 业务代码或使用 Qt Designer。**
-
-> **关于安装包体积与构建产物的约定**：
-> 打包生成的 Windows 一键安装包（`~164 MB`）与绿色便携包（`~258 MB`）内含完整的独立 Python 3.12 + GDAL / GeoPandas / Rasterio / SciPy / Cartopy 空间计算栈，属于构建产物（已在 `.gitignore` 中忽略，**严禁直接提交进 Git 仓库**）。在当前开发阶段，协作者拉取源码后直接运行 `opengis studio` 即可在浏览器使用完全相同的界面，或运行 `pwsh -File scripts/build_desktop.ps1` 在本地一键编译出 `.exe` 安装包；正式里程碑版本发布时再由维护者统一上传至 GitHub Releases。
+欢迎来到 **OpenGIS-Agent**！无论你平时做空间分析、科研制图、GIS 插件开发，还是关注 AI Agent 与前端可视化，都欢迎参与到项目的共建中。这份文档用最直白的方式说明：**我们的核心目标是什么、目前仓库各个分支的进展、整体结构是怎么设计的，以及接下来最需要大家一起发力的五个方向。**
 
 ---
 
-## 二、接下来我们要做什么？（四大主攻方向与待认领任务）
+## 一、项目目标与当前进展
 
-接下来的版本演进聚焦四件事：**把空间分析做深、把专题制图做精、把 AI 操控的可视化与人机交互做顺、把 4～5 种开箱即用的交付形态做透，并用硬核 Benchmark 持续检验。**
+### 1. 我们的目标
+我们的目标是打造**最好用、最专业的开源 GIS Agent**：
+- 在**地理空间分析能力**上做到扎实可靠，算得准、过程可复现；
+- 在**出版级制图出图**上做到美观规范，摆脱 AI 默认画图的粗糙感；
+- 在**可视化与人机协作**上做到丝滑顺手，让人和 Agent 能围绕同一张地图高效配合；
+- 在**交付形态**上做到开箱即用，支持独立桌面软件（`.exe`）、网页工作台、命令行终端、AI 编程工具插件（Claude Code / Codex）以及传统 GIS 软件插件（QGIS / ArcGIS Pro）等多种使用方式。
 
-### 方向一：狠抓地理空间分析能力（Spatial Analysis & Domain Skills）
-目标：让 Agent 面对复杂科研建模与全国 GIS 技能大赛综合题时，算得准、口径严、物理量守恒、边界情况不翻车。
-- [ ] **网络分析与城市交通深水区**：在现有网络分析四件套基础上，补充多模式联运（步行+公交/地铁 GTFS 时空可达性）、OD 矩阵大规模向量化加速、路网拓扑自动缝合与悬挂点诊断工具脚本。
-- [ ] **遥感影像与时序物候分析（`gis-raster-and-imagery`）**：补充多光谱云掩膜（QA 波段解析）、非尺度不变指数（SAVI/EVI）反射率自动定标校验、变化检测转移矩阵与分带统计面积守恒核查脚本。
-- [ ] **水文地形与灾害风险建模（`gis-terrain-and-hydrology`）**：完善无洼地 DEM 填洼、汇水累积量阈值自适应河网提取、SCS-CN 产流估算、洪水淹没体积平衡与子流域划分参考实现。
-- [ ] **空间统计与地理加权回归（`gis-spatial-statistics`）**：补齐空间自相关（全局/局部 Moran's I、LISA 聚类图标准分类）、MGWR / GWR 诊断指标与空间插值交叉验证（Kriging / IDW RMSE 对比）。
+### 2. 当前分支说明
+本仓库目前维护两个主要分支（本文档在两个分支间同步共享）：
+- **主分支（`main`）**：已完成 `v9.0` 阶段（当前 `v9.0.6`），提供稳定的命令行交互终端（`opengis`）、7 套地理信息技能包（Skills）、开源网络分析工具集、出版级制图组件与 MCP 服务。
+- **开发分支（`feature/v9.1-studio`）**：正在推进 `v9.1` 阶段的可视化工作台（**OpenGIS Studio** 独立桌面端 `.exe` 与网页端）及人机交互闭环，待迭代成熟后合入主分支。
 
-### 方向二：狠抓出版级制图与复杂流图表达（Publication Cartography）
-目标：彻底告别“AI 默认糙图”，让零提示生成的每一张专题图都具备期刊出版级版式与可导入 Illustrator / Figma 二次精修的干净矢量结构。
-- [ ] **多点—线—流（OD / Flow Map）进阶精修**：
-  - 优化高密度区域（如长三角/珠三角城市群）的贝塞尔弧线曲率自适应避让与双向不对称流线分层；
-  - 完善复合图例（节点分级气泡 + 流强分级线宽）在多种长宽比画布下的紧凑排版；
-  - 为 `add_flow_arcs` 支持直接传入内部分割断点或自动识别完整区间边界。
-- [ ] **高密度中文注记智能分层与防碰撞**：建立“主中心城市大字号粗体 + 次级节点小字号细体 + 密集区自动牵引线（Leader Lines）+ 重点要素优先保留”的确定性排布原语，消除县市级密集标签重叠。
-- [ ] **多向地形晕渲（Multi-Azimuth Hillshade）与美丽底图衬底**：提供纯 NumPy 多光源柔和地形晕渲叠加原语，以及标准邻省/邻国消色衬底、海岸线水体分层渲染模板。
-- [ ] **更严格的自动化视觉质检（`layout_diagnostics`）**：在现有 5 项版面卫生检查（堆叠副标题、白底贴片框、双刻度重叠、出界裁切文字、四边留白比）之上，引入图例与主图要素碰撞检测、色彩对比度检查与 SVG 图层语义完整性断言。
-
-### 方向三：地理 AI 智能体操控的可视化与人机交互（AI-Driven Visualization & HIL）
-目标：把“AI 盲跑 10 分钟、自己瞎改 8 轮脚本”变成“人机协同指哪打哪、1～2 轮精准定稿”。
-- [ ] **画布与 Agent 的双向深度操控**：
-  - 支持 Agent 通过结构化指令主动控制前端画布（如自动高亮异常要素、飞掠聚焦到问题区域、自动切换对比波段）；
-  - 增强前端画布对大容量数据（十万级要素 `.gpkg` / 大幅面多波段 `.tif`）的分级加载、字段直方图交互筛选与点击属性行反选地图定位。
-- [ ] **图上红框批注（Figure Critique）与局部参数微调面板**：
-  - 在 `FigureWorkbench` 红框归一化批注（`figure_annotations`）基础上，支持直接点击识别 SVG 语义图层（`<g id="flow_arcs">`、`<g id="size_legend">`、`<g id="scalebar">`）；
-  - 提供常用制图参数（色带切换、分级方法 Quantile/Jenks、线宽范围、图例位置）的快捷微调控件，提交后驱动 Agent 仅用 `edit_file` 秒级重出图。
-- [ ] **三档执行策略体验打磨**：完善 `auto`（全自动推进）、`plan_first`（体检后先弹方案与口径确认卡）、`step_review`（关键阶段与首版出图后自动挂起审阅）在各类复杂任务中的提示词与 UI 衔接。
-
-### 方向四：5 种开箱即用的交付形态与生态挂载（Multi-Endpoint Delivery）
-目标：同一套 `gis_agent` 核心与 `gis_agent/server/` 服务，按用户习惯提供 5 种即开即用的使用途径：
-1. **原生桌面应用（`OpenGIS Studio.exe` / 便携包）** *(已落地 v9.1，持续打磨启动速度、自动更新、安装包瘦身与 macOS `.dmg` 跨平台构建)*
-2. **本地浏览器工作台（`opengis studio`）** *(已落地 v9.1，与桌面端 100% 共用 `frontend/` 代码)*
-3. **极简命令行交互终端（`opengis`）** *(已落地，支持跨目录凭据复用、命名会话管理与结构化选项展示)*
-4. **STDIO MCP 服务（`gis-agent-mcp`）** *(已落地，供 Claude Code / Codex / Cursor / Antigravity 零配置调用内环工具与 Skills)*
-5. **专业 GIS 软件原生薄壳插件（v9.2 重点招募共建！）**：
-   - [ ] **QGIS 停靠面板插件（`< 500 KB` 纯 PyQt 薄客户端）**：**绝不在 QGIS 内置 Python 中重复安装大模型与重型科学计算库**，而是作为轻量客户端连接本地 `opengis-server`，把 QGIS 当前选中图层/选中要素 FID/视口范围实时同步给 `WorkspaceContext`，并在收到 `artifact_published` 时自动将生成图层挂载进 `QgsProject.instance()` 画布！
-   - [ ] **ArcGIS Pro 停靠面板插件 / TCP 桥接适配**：对接轻量 `.esriAddinX` TCP 桥（如 `127.0.0.1:5876` 长度前缀 JSON 协议）或 `WebView2 DockPane`，在不破坏 9 静态工具 KV-Cache 架构的前提下，扩展可选的 `gis_agent/integrations/arcgis/` 算子后端。
-
-### 方向五：GeoAgentBench 基准测试与显著性评测（Evaluation & Benchmarks）
-目标：拒绝“凭感觉优化”，每一次 Skill、Prompt 或制图原语改动都要有客观评测数据支撑。
-- [ ] **全国大学生 GIS 技能大赛真题库与行业盲测集建设**：扩充 `benchmarks/geoagentbench/`，收录历届竞赛空间分析与制图综合题、真实科研复现题，配套零答案泄露的沙箱评测脚本。
-- [ ] **确定性物理与拓扑不变量断言（`metamorphic_checks.py`）**：完善面积/总量守恒、三角不等式、CRS 一致性、图层非空率、版面卫生 5 项全绿率以及单题 Token 成本/耗时账本对比。
+### 3. 整体结构（三层解耦设计）
+为了让同一套核心能力可以导出成各种形态供大家使用，项目在结构上分成了清晰的三层：
+1. **底层：GIS 分析与制图工具库（`gis_agent/runtime/`、`integrations/`、`skills/`）**  
+   包含空间数据快速检查、可组合的出版级制图排版组件（随仓开源字体、比例尺、指北针、流图弧线、复合图例、版面质量检查，同时输出 `300 dpi` PNG 与可编辑 `<text>` 的矢量 SVG），以及 7 套按领域整理的 GIS 技能与参考脚本。
+2. **中间层：Agent 核心调度引擎（`gis_agent/core/`、`persistence/`、`agent.py`、`application.py`）**  
+   负责多轮对话记忆、任务分步规划、Python / PyQGIS 脚本隔离执行、SQLite 断点保存，以及运行中随时暂停/恢复。这一层不绑死任何界面，任何前端或插件都可以直接调用它。
+3. **外层：多端交互界面与插件（`gis_agent/adapters/`、`server/`、`frontend/`、`desktop/`）**  
+   在核心引擎外面接上不同的“壳”：包括 `opengis` 命令行终端、基于 FastAPI + React + MapLibre GL 的可视化地图工作台（以及 Tauri 封装的 `.exe` 桌面壳），以及面向外部 IDE 和桌面 GIS 软件的插件接口。
 
 ---
 
-## 三、本地开发环境配置与构建指南
+## 二、接下来我们要做什么？（五大主攻方向）
 
-### 1. 基础环境要求
-- **Python 核心与空间栈**：Python `3.11+`（推荐 `3.12`）+ 包管理器 **[uv](https://docs.astral.sh/uv/)**。
-- **前端工作台开发（修改 `frontend/` 时需要）**：**Node.js `20+`** + **pnpm `9+`**。
-- **原生桌面端编译（仅在修改 `desktop/` 或本地打包 `.exe` 时需要）**：**Rust (`rustup` stable `1.90+`)** + Windows 10/11 SDK 与 VS C++ Build Tools（含 WebView2 Runtime）。
-- **桌面 QGIS（可选）**：若本机装有 QGIS，可在设置页或 `.env` 中配置 `GIS_AGENT_QGIS_DIR=E:/exe/qgis` 解锁 PyQGIS / Processing 算法；未安装 QGIS 时，内置开源空间栈同样可独立完成 95% 以上任务。
+### 方向一：持续扩充地理空间分析能力
+我们目前已经梳理了 7 个基础技能模块（数据读写与整理、矢量与路网分析、栅格与遥感影像、地形与水文分析、空间统计、专题制图、结果验证）。接下来欢迎大家继续往里补充更扎实、覆盖面更广的 GIS 分析能力：
+- **丰富各领域的标准分析工作流与参考脚本**：例如城市交通与多模式可达性、选址优化、遥感指数计算与变化检测、流域水文与洪水淹没模拟、空间自相关与地理加权回归（GWR）、空间插值、时空轨迹及三维/街景分析等；
+- **沉淀常见易错点与数据检查规则**：把投影转换、单位换算、NoData 处理、拓扑修复、面积/总量守恒检查等实战经验写进对应的 Skill 参考文档和脚本里，提升 Agent 一次性算对的成功率。
 
-### 2. 拉取代码与安装开发环境
+### 方向二：打磨出版级专题制图
+制图是 GIS 成果最重要的门面。我们希望狠抓各类专题图的成图质量，不只局限于某一种图，而是全面解决实际制图中的高频痛点：
+- **攻克核心版面与视觉难题**：包括**密集文字标注与符号的遮挡避让、整体版面布局与留白平衡、图例/比例尺/指北针/经纬网的协调排布、多子图复合排版、色彩搭配与主次视觉层次、复杂点线流图（OD Flow）以及地形晕渲底图衬托**等；
+- **制图类 PR 的对比验证约定**：如果你修改或优化了 `gis-cartography` 中的 Skill 文档、提示词或默认制图脚本/原语（`gis_agent/integrations/plotting/`），**请使用相同的提示词（Prompt）测试生成 3～5 张不同场景的地图，并在提交 PR 时附上修改前后的对比图（Before / After）**，方便直观评估改进效果。
+
+### 方向三：地理 AI 可视化与双向人机协同
+我们做可视化工作台和交互功能，**并不是写死只能用某一种固定的红框批注或单一控件**，而是希望实现**“人通过 Agent 快速操控软件”与“人用 GIS 界面顺手调整并反馈给 Agent”的双向闭环**：
+- **让 Agent 替人干繁琐的操作**：用户可以用自然语言让 Agent 自动加载数据、清洗转换、配置图层样式、聚焦到目标区域或批量生成图表，省去在多层菜单里翻找工具的时间；
+- **让人在界面上的操作能实时喂回给 Agent**：对于人眼和鼠标更擅长的事（比如在地图上浏览缩放、点选特定要素、框选研究范围、开关图层、手动微调分级断点/配色、或者在生成的图件上标记需要调整的局部位置），用户在界面上操作后，**系统能把这些状态和意图自动同步给 Agent，让 Agent 明确知道用户改了什么、接下来该怎么接力调整代码或重跑分析**。欢迎大家围绕这个理念探索更自然、更通用的 GIS 人机交互方式。
+
+### 方向四：打造多种开箱即用的应用与插件形态
+为了让不同背景的用户都能拿到手就用，我们计划将同一套内核导出为以下 5 种简洁易用的交付形式：
+1. **独立桌面应用（`.exe` 一键安装包 / 绿色便携包）**：内置独立 Python 空间运行环境，用户无需配置复杂的 GIS 环境，双击即可打开可视化地图工作台（目前已在 `feature/v9.1-studio` 落地原型，持续打磨体验与安装包体积）。
+2. **本地网页工作台（`opengis studio`）**：与桌面应用共用同一套 React + MapLibre 前端界面，一行命令即可在本地浏览器打开交互画布。
+3. **命令行交互终端（`opengis`）**：轻量、快速的终端对话工具，支持系统凭据库保存密钥与多文件夹会话管理。
+4. **Claude Code / Codex 等 AI 编程工具插件**：面向 Claude Code、Codex、Cursor 等主流 AI Coding Harness 制作原生插件包与技能扩展，让习惯在 AI 编辑器里工作的开发者可以直接调用整套 GIS 分析与制图能力。
+5. **QGIS / ArcGIS Pro 桌面 GIS 插件**：在 QGIS（PyQt 停靠面板）和 ArcGIS Pro 中提供原生轻量插件，把软件里当前打开的图层、选中的要素和画布范围直接连入 Agent，并将 Agent 生成的结果自动加载回软件画布。
+- *此外*：项目同时保留标准 **MCP 服务接口（`gis-agent-mcp`）**，支持与各类支持 MCP 协议的客户端或外部工具服务灵活连接。
+
+### 方向五：扩充空间分析与制图评测集（Benchmark）
+要狠抓空间分析和制图能力，离不开扎实、客观的测试集（`benchmarks/geoagentbench/`）：
+- **扩充专题制图测试题库**：收集覆盖区位图、分级统计图、多点线流图、多波段遥感图、地形水文图、多联科研复合图等不同难度和版式要求的制图测试题目；
+- **引入竞赛真题与主流 GIS Agent Benchmark**：结合**全国大学生 GIS 技能大赛历届真题**以及国内外主流的 **GIS / GeoAI Agent Benchmark** 开展系统化评测与对比；
+- **欢迎贡献高质量实测案例**：非常欢迎大家提交带有**“明确题目与操作步骤 + 明确输入数据 + 明确预期结果或核验标准”**的完整测试题，用真实任务检验和推动 Agent 能力的提升。
+
+---
+
+## 三、本地开发环境配置与运行
+
+### 1. 基础命令行与空间分析开发（`main` 与 `feature/v9.1-studio` 通用）
+安装 Git 和 [uv](https://docs.astral.sh/uv/)，拉取代码并同步 Python 环境：
 
 ```powershell
-# 1. 克隆仓库并切换到 v9.1 开发分支
 git clone https://github.com/zhishimian/OpenGIS-Agent.git
 cd OpenGIS-Agent
-git checkout feature/v9.1-studio
 
-# 2. 同步 Python 核心、CLI、开源空间计算栈、Studio 服务端与测试依赖
-uv sync --extra cli --extra geo --extra studio --extra dev
+# 安装核心、命令行与完整开源空间分析/制图依赖
+uv sync --extra cli --extra geo --extra dev
 
-# 3. 安装前端依赖并编译静态产物到 gis_agent/server/static/
-pnpm --dir frontend install
-pnpm --dir frontend run build:sync
+# 启动命令行交互终端
+uv run --no-sync opengis
 ```
 
-### 3. 三种本地运行与调试方式
+### 2. 可视化工作台与桌面端开发（`feature/v9.1-studio` 分支）
+如果需要参与可视化前端或桌面 `.exe` 开发，请切换到 `feature/v9.1-studio` 分支（需额外安装 Node.js / `pnpm`；若需本地打包 `.exe` 则需安装 Rust `1.90+`）：
 
-- **方式 A：直接启动本地浏览器版 Studio（最轻量，无需编译 Rust）**
-  ```powershell
-  uv run --no-sync opengis studio --folder "你的数据文件夹路径"
-  ```
-  前后端联调时，可在一侧运行 `uv run --no-sync opengis-server --port 8765 --allow-bootstrap`，另一侧运行 `pnpm --dir frontend dev`（访问 `http://127.0.0.1:5173` 支持热更新）。
+```powershell
+git checkout feature/v9.1-studio
 
-- **方式 B：启动极简命令行终端或 MCP 服务**
-  ```powershell
-  uv run --no-sync opengis --folder "你的数据文件夹路径"
-  uv run --no-sync gis-agent-mcp --project "你的数据文件夹路径"
-  ```
+# 1) 同步包含 Studio 本地服务的 Python 依赖
+uv sync --extra cli --extra geo --extra studio --extra dev
 
-- **方式 C：本地一键构建 Windows 桌面安装包（`.exe`）与便携包（`.zip`）**
-  ```powershell
-  # 自动编译前端 -> 组装并裁剪独立便携 Python 3.12 空间运行时 -> 编译 Tauri + NSIS 安装包
-  pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_desktop.ps1 -UseChinaMirror
-  ```
-  构建完成后，产物位于本地 `dist/OpenGIS-Studio-9.1.0-x64-setup.exe` 与 `dist/OpenGIS-Studio-9.1.0-x64-portable.zip`。
+# 2) 安装前端依赖并编译静态页面
+pnpm --dir frontend install
+pnpm --dir frontend run build:sync
+
+# 3) 启动本地浏览器版 Studio 工作台
+uv run --no-sync opengis studio --folder "你的数据目录"
+
+# 4) （可选）本地一键编译 Windows .exe 安装包与便携包（产物输出在 dist/ 目录）
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_desktop.ps1 -UseChinaMirror
+```
+
+> **关于安装包构建产物的说明**：打包生成的 `.exe` 安装包（一百多 MB，内含独立 Python 空间库）属于编译产物，已在 `.gitignore` 中忽略，不直接放进代码仓库；开发阶段由开发者在本地按需构建，正式发版时统一上传至 GitHub Releases。
 
 ---
 
-## 四、贡献规范与提交 PR 检查清单
+## 四、提交 Pull Request 简要清单
 
-1. **严守模块边界与语言约定**：
-   - 新增制图原语请放入 `gis_agent/integrations/plotting/primitives.py` 并在 `__init__.py` 导出，附上语义 `gid="..."` 以支持 SVG 图层解析，同时将简洁签名更新到 `gis_agent/skills/gis-cartography/references/api.md`（注意 `api.md` 必须保持 `< 5 KB` 首屏可读）。
-   - **`gis_agent/skills/` 下所有 `.md` 与 `.py` 文件必须保持 100% 纯英文**（由离线单测严格校验全英文与相对链接锚点有效性）。
-   - 保持核心 9 个静态工具稳定，不在 `Agent` 主循环中随意堆砌新工具Schema。
-2. **提交前必跑离线回归测试**：
+1. **运行离线测试确保无回归**：
    ```powershell
-   # 快速离线单元测试（含服务端、HIL 检查点、空间预览、Skills 审计）
    uv run --no-sync pytest tests/ -m "not slow and not live" -q
-
-   # 评测运行器与成本账本单测
    uv run --no-sync pytest benchmarks/geoagentbench/test_runner.py -q
-
-   # 若修改了前端代码，确保 TypeScript 类型检查与构建零报错
-   pnpm --dir frontend run build:sync
    ```
-3. **Commit 与文件卫生**：
-   - Commit Message 请遵循 **Conventional Commits** 规范（如 `feat(cartography): ...`、`fix(server): ...`、`docs: ...`）。
-   - **切勿提交** `.env`、真实 API Key、`sessions/`、`outputs/`、`dist/`、`node_modules/`、`desktop/src-tauri/target/` 或百兆级二进制安装包。
+2. **制图与 Skill 修改验证**：
+   - 修改 `gis_agent/skills/` 下文件时，请保持英文编写（仓库配有自动化链接与格式检查单测）；
+   - 修改制图 Skill 或默认绘图原语时，请在 PR 描述中附上 **同提示词下 3～5 张图的修改前后对比效果**。
+3. **保持仓库干净**：请勿提交 `.env` 密钥、`sessions/`、`outputs/`、`node_modules/` 或 `dist/` 下的打包二进制文件。
