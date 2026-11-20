@@ -15,6 +15,7 @@
 /HANDOFF.md
 /V9_总体改造方针与落地蓝图.md
 /主流GIS_Agent与制图方案深度调研报告.md
+/AGENT_TECH_STACK_AND_INTERVIEW_GUIDE.md
 
 # Caches, IDE & temporary artifacts
 __pycache__/
@@ -27,3 +28,14 @@ __pycache__/
 *.sqlite-*
 *.log
 *.tmp
+
+# V9.1 Studio frontend, Tauri desktop & packaging artifacts
+/frontend/node_modules/
+/frontend/dist/
+/desktop/node_modules/
+/desktop/src-tauri/target/
+/desktop/src-tauri/gen/
+/desktop/src-tauri/resources/
+/dist/
+/gis_agent/server/static/*
+!/gis_agent/server/static/.gitkeep

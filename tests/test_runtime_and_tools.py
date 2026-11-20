@@ -1236,3 +1236,31 @@ def test_run_python_script_timeout_schema_and_bounds(tmp_path: Path) -> None:
     script.write_text("print('hi')\n", encoding="utf-8")
     rejected = run_python_script(launcher, tmp_path / "logs", str(script), timeout_sec=601)
     assert not rejected["ok"] and "600" in rejected["error"]
+
+
+def test_read_file_expanded_limits_and_truncation_metadata(tmp_path: Path) -> None:
+    """read_file 默认 16000、上限 32000，并准确返回 truncated 与 remaining_characters 提示。"""
+    from gis_agent.tools.files import make_file_tools
+
+    big = tmp_path / "long_doc.txt"
+    big.write_text("A" * 25000, encoding="utf-8")
+
+    default_read = read_file(str(big))
+    assert default_read["ok"]
+    assert len(default_read["content"]) == 16000
+    assert default_read["truncated"] is True
+    assert default_read["remaining_characters"] == 9000
+    assert default_read["next_start"] == 16000
+
+    full_read = read_file(str(big), limit=32000)
+    assert full_read["ok"] and len(full_read["content"]) == 25000
+    assert full_read["truncated"] is False
+    assert full_read["remaining_characters"] == 0
+    assert full_read["next_start"] is None
+
+    too_big = read_file(str(big), limit=32001)
+    assert not too_big["ok"] and "32000" in too_big["error"]
+
+    tools = {t.name: t for t in make_file_tools()}
+    assert tools["read_file"].parameters["properties"]["limit"]["maximum"] == 32000
+    assert "16000" in tools["read_file"].description

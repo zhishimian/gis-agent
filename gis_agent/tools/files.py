@@ -45,14 +45,14 @@ def list_files(path: str, start: int = 0, limit: int = 100) -> dict[str, Any]:
 def read_file(
     path: str,
     start: int = 0,
-    limit: int = 6000,
+    limit: int = 16000,
     encoding: str = "utf-8",
 ) -> dict[str, Any]:
     target = Path(path).expanduser().resolve()
     if not target.is_file():
         return {"ok": False, "error": f"文件不存在：{target}"}
-    if start < 0 or not 1 <= limit <= 20000:
-        return {"ok": False, "error": "start 必须非负，limit 必须在 1 到 20000 之间。"}
+    if start < 0 or not 1 <= limit <= 32000:
+        return {"ok": False, "error": "start 必须非负，limit 必须在 1 到 32000 之间。"}
 
     data = target.read_bytes()
     try:
@@ -66,6 +66,8 @@ def read_file(
         "total_characters": len(text),
         "sha256": hashlib.sha256(data).hexdigest(),
         "content": text[start:end],
+        "truncated": end < len(text),
+        "remaining_characters": len(text) - end,
         "next_start": end if end < len(text) else None,
     }
 
@@ -221,15 +223,15 @@ def make_file_tools(
         Tool(
             name="read_file",
             description=(
-                "分段读取文本文件，不用于二进制数据。start 是从零开始的字符位置；"
-                "通过返回的 next_start 继续读取。默认 UTF-8，必要时指定 encoding。"
+                "分段读取文本文件，不用于二进制数据。start 是从零开始的字符位置，默认 limit=16000（上限 32000）；"
+                "当 truncated=true 或 next_start 非空时请传入 start=next_start 续读，避免遗漏后半段 API。默认 UTF-8，必要时指定 encoding。"
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "start": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 20000},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 32000},
                     "encoding": {"type": "string"},
                 },
                 "required": ["path"],

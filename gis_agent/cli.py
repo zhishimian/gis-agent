@@ -92,10 +92,11 @@ def main(
 @app.command("chat")
 def chat_command(
     ctx: typer.Context,
-    project: Annotated[Path | None, typer.Option()] = None,
+    project: Annotated[Path | None, typer.Option("--project", "--folder", exists=True, file_okay=False, help="会话所属文件夹，默认为当前目录。")] = None,
     session: Annotated[str | None, typer.Option()] = None,
 ) -> None:
-    chat(project or ctx.obj["project"], session or ctx.obj["session"])
+    resolved = project.expanduser().resolve() if project is not None else ctx.obj["project"]
+    chat(resolved, session or ctx.obj["session"])
 
 
 @app.command()
@@ -163,4 +164,32 @@ def waiting_command(ctx: typer.Context, session: Annotated[str | None, typer.Opt
             ensure_ascii=False,
             indent=2,
         )
+    )
+
+
+@app.command("studio")
+def studio_command(
+    ctx: typer.Context,
+    project: Annotated[Path | None, typer.Option("--project", "--folder", exists=True, file_okay=False, help="工作文件夹，默认为当前目录。")] = None,
+    host: Annotated[str, typer.Option(help="绑定主机，默认仅本机回环。")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="监听端口，0 表示自动分配空闲端口。")] = 0,
+    no_browser: Annotated[bool, typer.Option("--no-browser", help="仅启动服务，不自动打开系统浏览器。")] = False,
+) -> None:
+    """启动本地 OpenGIS Studio Web 工作台与空间引擎服务。"""
+    resolved = (project.expanduser().resolve() if project is not None else ctx.obj["project"])
+    try:
+        from gis_agent.server.app import run_server
+    except ImportError as error:
+        typer.echo(
+            "未安装 Studio 服务依赖（fastapi / uvicorn）。请运行 `uv tool install \"gis-agent[cli,geo,studio]\"` 或 `uv sync --extra studio`。",
+            err=True,
+        )
+        raise typer.Exit(1) from error
+
+    run_server(
+        project=resolved,
+        host=host,
+        port=port,
+        open_browser=not no_browser,
+        allow_bootstrap=True,
     )

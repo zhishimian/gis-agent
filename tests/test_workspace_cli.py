@@ -94,3 +94,33 @@ def test_first_run_password_prompt_and_skip(tmp_path, monkeypatch):
     assert saved == ["private-test-value"]
     assert saved[0] not in out.getvalue()
     assert "测试凭据库" in out.getvalue()
+
+
+def test_terminal_lazy_session_and_chat_folder_alias(tmp_path, monkeypatch):
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+    from rich.console import Console
+    from gis_agent.adapters import terminal
+
+    seen = []
+    monkeypatch.setattr(cli, "chat", lambda project, session: seen.append((project, session)))
+    folder = tmp_path / "work"
+    folder.mkdir()
+    assert CliRunner().invoke(cli.app, ["chat", "--folder", str(folder)]).exit_code == 0
+    assert seen[-1] == (folder.resolve(), None)
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-dummy-test")
+    monkeypatch.setattr("gis_agent.config.load_dotenv", lambda _: None)
+    cfg = AppConfig.from_env(tmp_path / "lazy_ws")
+    cfg.project.mkdir(parents=True, exist_ok=True)
+    with create_pipe_input() as keyboard:
+        monkeypatch.setattr(terminal, "Console", lambda **opts: Console(file=StringIO(), width=80, highlight=False))
+        monkeypatch.setattr(terminal, "make_prompt", lambda _c, _r: PromptSession(
+            input=keyboard, output=DummyOutput(),
+        ))
+        keyboard.send_text("/exit\r")
+        terminal.run_terminal(cfg, None)
+
+    assert not (cfg.project / "sessions").exists()
+    assert not (cfg.project / "outputs").exists()

@@ -1272,3 +1272,263 @@ def test_v9055_integer_graticules_zero_anchored_legend_and_font_priority(tmp_pat
         plt.close(fig_br)
 
 
+def test_v906_api_doc_compact_and_flow_primitives(tmp_path: Path) -> None:
+    """V9.0.6 精简 <5KB API 文档及多点-线-流（无向/有向弧线 + 嵌套组合图例）原语测试。"""
+    import importlib.util
+    if any(importlib.util.find_spec(m) is None for m in ("geopandas", "matplotlib", "pyproj", "shapely")):
+        pytest.skip("当前解释器缺少基础制图依赖。")
+
+    api_doc = ROOT / "gis_agent/skills/gis-cartography/references/api.md"
+    raw_bytes = api_doc.read_bytes()
+    assert len(raw_bytes) < 5120, f"api.md 应小于 5KB，实际 {len(raw_bytes)} B"
+    head_text = api_doc.read_text(encoding="utf-8")[:3000]
+    for sym in ("configure_plotting", "export_figure", "add_scalebar_and_north", "add_flow_arcs", "add_size_legend"):
+        assert sym in head_text, sym
+
+    import geopandas as gpd
+    import matplotlib.pyplot as plt
+    from shapely.geometry import LineString, Point, box
+
+    from gis_agent.integrations.plotting import (
+        GEO_COLORS,
+        MapPanel,
+        add_flow_arcs,
+        add_graticule_frame,
+        add_scalebar_and_north,
+        add_size_legend,
+        apply_publication_theme,
+        configure_plotting,
+        export_figure,
+    )
+
+    configure_plotting(font_style="serif", svg_editable_text=True)
+    apply_publication_theme("light_geo", fig_width=8.6)
+
+    # 1. 无向多点-线-流（省域衬底 + 升序弧线 + 枢纽散点 + 组合尺寸线宽图例）
+    poly_gdf = gpd.GeoDataFrame(geometry=[box(200_000, 3_400_000, 700_000, 3_800_000)], crs="EPSG:32650")
+    od_rows = [
+        {"x0": 300_000, "y0": 3_500_000, "x1": 600_000, "y1": 3_700_000, "flow": 500.0},
+        {"x0": 280_000, "y0": 3_680_000, "x1": 580_000, "y1": 3_520_000, "flow": 1800.0},
+        {"x0": 350_000, "y0": 3_550_000, "x1": 520_000, "y1": 3_620_000, "flow": 6400.0},
+    ]
+    hubs = gpd.GeoDataFrame(
+        {"val": [40.0, 120.0, 260.0]},
+        geometry=[Point(300_000, 3_500_000), Point(600_000, 3_700_000), Point(520_000, 3_620_000)],
+        crs="EPSG:32650",
+    )
+
+    fig = plt.figure(figsize=(8.6, 5.8))
+    try:
+        ax = fig.add_axes([0.08, 0.14, 0.62, 0.76])
+        ax.set_facecolor(GEO_COLORS["ocean_soft"])
+        poly_gdf.plot(ax=ax, facecolor="#f7f6f4", edgecolor=GEO_COLORS["border_study"], linewidth=1.0, zorder=8)
+        flow_res = add_flow_arcs(ax, od_rows, value_col="flow", directed=False, n_classes=3, zorder=5)
+        assert flow_res["count"] == 3 and len(flow_res["legend_items"]) == 3
+        assert flow_res["linewidths"] == sorted(flow_res["linewidths"])
+        hubs.plot(ax=ax, markersize=hubs["val"], color="#d96f32", edgecolor="#ffffff", linewidth=0.8, zorder=7)
+        ax.set_xlim(180_000, 720_000)
+        ax.set_ylim(3_380_000, 3_820_000)
+        ax.set_aspect("equal")
+        ax.set_title("Flow & Hub Network Test", fontsize=16, fontweight="bold")
+        add_graticule_frame(ax, crs="EPSG:32650", style="ticks_only", dms=True)
+        add_scalebar_and_north(ax, crs_units="metre", loc="lower right", north_loc="upper left")
+
+        ax_leg = fig.add_axes([0.72, 0.16, 0.25, 0.72])
+        leg_info = add_size_legend(
+            ax_leg,
+            [("Hub High (260)", 260), ("Hub Mid (120)", 120), ("Hub Low (40)", 40)],
+            layout="nested",
+            title="Hub Centrality",
+            line_items=flow_res["legend_items"],
+            line_title="Flow Strength",
+        )
+        assert leg_info["layout"] == "nested"
+
+        out = export_figure(fig, tmp_path / "flow_undir", formats=("png", "svg"), map_panels=(MapPanel("main", ax, "EPSG:32650"),))
+        assert out["warnings"] == []
+        typo = out["layout_diagnostics"]["typography"]
+        hyg = out["layout_diagnostics"]["hygiene"]
+        assert not typo["small_text_warning"] and not typo["non_even_font_warning"]
+        assert not any(v for k, v in hyg.items() if k.endswith("_warning")), hyg
+        svg_txt = Path(out["files"]["svg"]).read_text(encoding="utf-8")
+        assert "flow_arcs" in svg_txt and "size_legend" in svg_txt
+    finally:
+        plt.close(fig)
+
+    # 2. 有向对称 A<->B 弧线 + 垂直双标题气泡+线宽组合图例
+    fig2 = plt.figure(figsize=(8.6, 5.6))
+    try:
+        ax2 = fig2.add_axes([0.08, 0.14, 0.60, 0.76])
+        gdf_dir = gpd.GeoDataFrame(
+            {"val": [100.0, 400.0]},
+            geometry=[LineString([(300_000, 3_500_000), (600_000, 3_700_000)]), LineString([(600_000, 3_700_000), (300_000, 3_500_000)])],
+            crs="EPSG:32650",
+        )
+        poly_gdf.plot(ax=ax2, facecolor="#f7f6f4", edgecolor="#333333", zorder=2)
+        dir_res = add_flow_arcs(ax2, gdf_dir, value_col="val", directed=True, symmetric=True, n_classes=2, zorder=5)
+        assert dir_res["count"] == 2 and len(dir_res["artists"]) >= 3
+        ax_vleg = fig2.add_axes([0.71, 0.24, 0.26, 0.56])
+        ax_vleg.set_axis_off()
+        vleg_res = add_size_legend(
+            ax_vleg,
+            [("400", 180), ("100", 60)],
+            layout="vertical",
+            title="Hub Outflow",
+            line_items=dir_res["legend_items"],
+            line_title="Arc Magnitude",
+        )
+        assert vleg_res["layout"] == "vertical" and vleg_res["scale_factor"] == 1.0
+        v_texts = [t.get_text() for t in ax_vleg.texts]
+        assert "Hub Outflow" in v_texts and "Arc Magnitude" in v_texts
+        out2 = export_figure(fig2, tmp_path / "flow_dir", formats=("png", "svg"), map_panels=(MapPanel("main", ax2, "EPSG:32650"),))
+        assert out2["warnings"] == []
+        assert not any(v for k, v in out2["layout_diagnostics"]["hygiene"].items() if k.endswith("_warning"))
+        assert not out2["layout_diagnostics"]["typography"]["non_even_font_warning"]
+    finally:
+        plt.close(fig2)
+
+
+def test_v906_network_four_piece_suite() -> None:
+    """V9.0.6 零新依赖网络分析四件套：Trimmed-TIN 服务区面、MILP/Huff 选址、障碍物+Top-K、边状态转弯图。"""
+    import importlib.util
+    if any(importlib.util.find_spec(m) is None for m in ("geopandas", "networkx", "numpy", "scipy", "shapely", "matplotlib")):
+        pytest.skip("当前解释器缺少网络分析依赖。")
+
+    net_scripts = str(SKILLS / "gis-vector-and-network/scripts")
+    if net_scripts not in sys.path:
+        sys.path.insert(0, net_scripts)
+
+    import geopandas as gpd
+    import networkx as nx
+    import numpy as np
+    from shapely.geometry import LineString, Point, box
+
+    from network_access import build_primal
+    from network_advanced import apply_barriers, build_turn_graph, closest_k_facilities, turn_shortest_path
+    from network_location import huff_market_share, locate, locate_milp
+    from service_area_polygon import (
+        clustered_concave_service_areas,
+        corridor_service_areas,
+        densify_reachable_samples,
+        trimmed_tin_service_areas,
+    )
+
+    # 1. Trimmed-TIN 服务区面：棋盘格市区填实 + 远郊单线保留 + 无路湖泊/孤岛剔除 + 单调性
+    lines = []
+    # Urban 5x5 grid in [0, 800] step 200 (cost = length / 100 min -> 2 min per 200m block)
+    for y in range(0, 1000, 200):
+        for x in range(0, 800, 200):
+            lines.append(LineString([(x, y), (x + 200, y)]))
+    for x in range(0, 1000, 200):
+        for y in range(0, 800, 200):
+            lines.append(LineString([(x, y), (x, y + 200)]))
+    # Rural highway spur out to x=1600
+    lines.extend([LineString([(800, 400), (1200, 400)]), LineString([(1200, 400), (1600, 400)])])
+    # Disconnected island across wide roadless lake [1600..3200]
+    lines.append(LineString([(3200, 200), (3400, 200)]))
+
+    road_gdf = gpd.GeoDataFrame(
+        {
+            "rid": [f"r{i}" for i in range(len(lines))],
+            "direction": ["both"] * len(lines),
+            "cost": [g.length / 100.0 for g in lines],
+        },
+        geometry=lines,
+        crs="EPSG:32650",
+    )
+    G = build_primal(road_gdf, road_key="rid", direction="direction", cost="cost")
+    origin = ("xy", 400.0, 400.0, ())
+    dists = nx.single_source_dijkstra_path_length(G, origin, cutoff=12.0, weight="cost")
+    pts_xy, times, r_lines = densify_reachable_samples(G, dists, [4.0, 10.0], max_spacing_m=150.0)
+
+    tin_rings = trimmed_tin_service_areas(pts_xy, times, [4.0, 10.0], trim_m=220.0, reachable_lines=r_lines, corridor_floor_m=30.0, mode="rings", crs=road_gdf.crs)
+    tin_disks = trimmed_tin_service_areas(pts_xy, times, [4.0, 10.0], trim_m=220.0, reachable_lines=r_lines, corridor_floor_m=30.0, mode="disks", crs=road_gdf.crs)
+    assert len(tin_rings) == 2 and len(tin_disks) == 2
+    disk4, disk10 = tin_disks.geometry.iloc[0], tin_disks.geometry.iloc[1]
+    assert disk10.area > disk4.area
+    assert abs((tin_rings["area_m2"].sum()) - disk10.area) < 1e-3
+    # 城市街区内部无路空地 [200..400, 200..400] 自动填实
+    urban_block = box(220, 220, 380, 380)
+    assert disk4.intersection(urban_block).area > 0.9 * urban_block.area
+    # 远郊干道末端在 10min 处被走廊保底留存 (from 800,400 is dist 4; cutoff 10 reaches x=1400)
+    assert disk10.intersects(Point(1300, 400))
+    # 跨湖空白与对岸孤岛被 trim_m 准确裁掉，绝不跨湖虚胖
+    assert not disk10.intersects(Point(2400, 400))
+    assert not disk10.intersects(Point(3300, 200))
+
+    corr = corridor_service_areas(r_lines, [4.0, 10.0], corridor_m=50.0, mode="rings", crs=road_gdf.crs)
+    conc = clustered_concave_service_areas(pts_xy, times, [4.0, 10.0], cluster_eps_m=300.0, reachable_lines=r_lines, mode="disks", crs=road_gdf.crs)
+    assert len(corr) == 2 and len(conc) == 2 and conc["area_m2"].iloc[1] > conc["area_m2"].iloc[0]
+
+    # 2. MILP 位置分配与 Huff 引力捕获
+    small_costs = [[1.0, 8.0, 15.0], [9.0, 2.0, 10.0], [14.0, 9.0, 3.0], [2.0, 7.0, 12.0]]
+    small_w = [2.0, 3.0, 4.0, 1.0]
+    for obj_name in ("p_median", "p_center", "maximum_coverage"):
+        kw = {"threshold": 4.0} if obj_name == "maximum_coverage" else {}
+        ref = locate(small_costs, small_w, 2, obj_name, solver="enumerate", **kw)
+        milp_res = locate_milp(small_costs, small_w, p=2, objective=obj_name, **kw)
+        assert abs(ref["value"] - milp_res["value"]) < 1e-6, (obj_name, ref, milp_res)
+
+    lscp = locate_milp(small_costs, small_w, objective="minimum_facilities", threshold=3.5)
+    assert lscp["sites"] == [0, 1, 2] and lscp["value"] == 3.0
+
+    cap_res = locate_milp([[1.0, 10.0], [1.0, 10.0], [1.0, 2.0]], [5.0, 5.0, 5.0], p=2, objective="p_median", capacities=[8.0, 10.0], required_sites=[1])
+    assert cap_res["sites"] == [0, 1] and cap_res["value"] > 17.0
+
+    # 大规模 C(30, 5)=142,506 自动路由 HiGHS MILP 秒解
+    rng = np.random.default_rng(7)
+    big_costs = rng.uniform(1.0, 50.0, size=(50, 30)).tolist()
+    big_w = rng.uniform(1.0, 10.0, size=50).tolist()
+    big_res = locate(big_costs, big_w, 5, objective="p_median", solver="auto")
+    assert len(big_res["sites"]) == 5 and big_res["solver"] == "milp"
+
+    huff = huff_market_share([[1.0, 2.0], [1.0, None]], [4.0, 4.0], beta=2.0, demand_weights=[10.0, 5.0])
+    assert abs(huff["probabilities"][0][0] - 0.8) < 1e-9 and huff["probabilities"][1] == [1.0, 0.0]
+
+    # 3. 障碍物（封路点 + 按交叠长度缩放降速区）与 Top-K 最近设施
+    b_res = apply_barriers(
+        G,
+        point_barriers=[Point(200, 400)],  # block direct west exit from (400,400)
+        polygon_barriers=[{"geometry": box(590, 380, 810, 420), "mode": "scaled_cost", "factor": 3.0}],
+    )
+    assert G.has_edge(("xy", 400.0, 400.0, ()), ("xy", 200.0, 400.0, ()), key=("r8", "b")) or b_res["removed_edges"] >= 2
+    assert b_res["scaled_edges"] >= 1 and b_res["graph"].number_of_edges() < G.number_of_edges()
+
+    topk = closest_k_facilities(G, {"d": origin}, {"f1": ("xy", 600.0, 400.0, ()), "f2": ("xy", 800.0, 400.0, ()), "f3": ("xy", 0.0, 0.0, ())}, k=3)
+    assert [row["facility_id"] for row in topk[0]["facilities"]] == ["f1", "f2", "f3"]
+    assert [row["cost"] for row in topk[0]["facilities"]] == [2.0, 4.0, 8.0]
+
+    # 4. 边状态转弯图：禁左转绕行、禁掉头与精确转弯延误累加
+    # Square loop + center chord: A(0,0)->B(10,0)->C(10,10)->D(0,10)->A(0,0), try going E(-10,0)->A(0,0)->D(0,10) (left turn)
+    t_lines = [
+        ("in_road", LineString([(-10, 0), (0, 0)]), 10.0),
+        ("west_up", LineString([(0, 0), (0, 10)]), 10.0),
+        ("bottom", LineString([(0, 0), (10, 0)]), 10.0),
+        ("east_up", LineString([(10, 0), (10, 10)]), 10.0),
+        ("top", LineString([(10, 10), (0, 10)]), 10.0),
+    ]
+    tg_df = gpd.GeoDataFrame(
+        {"rid": [x[0] for x in t_lines], "direction": ["both"] * len(t_lines), "cost": [x[2] for x in t_lines]},
+        geometry=[x[1] for x in t_lines],
+        crs="EPSG:32650",
+    )
+    G_turn = build_primal(tg_df, road_key="rid", direction="direction", cost="cost")
+    tg_ban_left = build_turn_graph(G_turn, weight="cost", forbidden_turns=[("in_road", "west_up")], forbid_uturns=True, straight_penalty=1.0, left_penalty=2.0)
+    res_detour = turn_shortest_path(tg_ban_left, ("xy", -10.0, 0.0, ()), ("xy", 0.0, 10.0, ()), weight="cost")
+    assert res_detour["ok"] and res_detour["road_ids"] == ["in_road", "bottom", "east_up", "top"]
+    # travel_cost = 40.0; turns: 1 straight (in->bottom) + 2 lefts (bottom->east_up, east_up->top) = 1 + 4 = 5.0
+    assert abs(res_detour["travel_cost"] - 40.0) < 1e-9 and abs(res_detour["turn_penalty_total"] - 5.0) < 1e-9 and abs(res_detour["cost"] - 45.0) < 1e-9
+
+    # Standalone dead-end turnaround check when forbid_uturns=True vs False
+    dead = gpd.GeoDataFrame(
+        {"rid": ["stem", "spur"], "direction": ["both", "both"], "cost": [5.0, 5.0]},
+        geometry=[LineString([(0, 0), (10, 0)]), LineString([(10, 0), (20, 0)])],
+        crs="EPSG:32650",
+    )
+    G_dead = build_primal(dead, road_key="rid", direction="direction", cost="cost")
+    tg_dead = build_turn_graph(G_dead, weight="cost", forbid_uturns=True, allow_deadend_uturns=True, uturn_penalty=3.0)
+    # Direct path is just stem; check turning state around dead-end edge works without error
+    assert ("edge", ("xy", 10.0, 0.0, ()), ("xy", 20.0, 0.0, ()), ("spur", "f")) in tg_dead
+    assert tg_dead.has_edge(("edge", ("xy", 10.0, 0.0, ()), ("xy", 20.0, 0.0, ()), ("spur", "f")), ("edge", ("xy", 20.0, 0.0, ()), ("xy", 10.0, 0.0, ()), ("spur", "b")))
+
+

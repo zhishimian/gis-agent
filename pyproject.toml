@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gis-agent"
-version = "9.0.5"
+version = "9.1.0"
 description = "OpenGIS-Agent: Verifiable Geospatial Coding & Publication-Grade Cartography Agent (Python / GeoPandas / Rasterio / PyQGIS / MCP)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -55,12 +55,22 @@ dev = [
     "pytest>=8.0",
     "pillow>=10.0",
     "typer>=0.12",
+    "keyring>=25.5",
+    "prompt-toolkit>=3.0.43",
+    "rich>=13.7",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
+studio = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
 ]
 
 [project.scripts]
 opengis = "gis_agent.adapters.cli:app"
 gis-agent = "gis_agent.adapters.cli:app"
 gis-agent-mcp = "gis_agent.adapters.harness_mcp:main"
+opengis-server = "gis_agent.server.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["gis_agent"]
