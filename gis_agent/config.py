@@ -102,7 +102,8 @@ class AppConfig:
             return self.python_executable
         if self.qgis is not None:
             return self.qgis.python_launcher
-        return Path(sys.executable).resolve()
+        # Resolving a venv symlink launches the base interpreter without its GIS packages.
+        return Path(sys.executable).absolute()
 
     @property
     def font_files(self) -> tuple[Path, ...]:
